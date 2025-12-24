@@ -286,6 +286,7 @@ namespace SecurityHeaderScannerGUI
             var hr = new HeaderCheckResult
             {
                 Name = "Content-Security-Policy",
+                Expected = "Obrigatórias: default-src 'self'; script-src 'self'",
                 Actual = actual
             };
 
