@@ -1,9 +1,11 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
 using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 
@@ -17,10 +19,10 @@ namespace SecurityHeaderScannerGUI
         {
             ["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains; preload",
             ["X-Frame-Options"] = "SAMEORIGIN",
-            ["Content-Security-Policy"] = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self';",
+            ["Content-Security-Policy"] = "",
             ["X-Content-Type-Options"] = "nosniff",
             ["Referrer-Policy"] = "no-referrer",
-            ["Permissions-Policy"] = "", // método CheckPermissionsPolicy
+            ["Permissions-Policy"] = "",
             ["Cross-Origin-Opener-Policy"] = "same-origin",
             ["Cross-Origin-Resource-Policy"] = "same-origin",
             ["Cross-Origin-Embedder-Policy"] = "require-corp OR credentialless"
@@ -41,12 +43,70 @@ namespace SecurityHeaderScannerGUI
                 item.Headers = headers;
 
                 item.Comparisons = CompareWithReference(headers);
+
+                // Integração CSP Evaluator (Google) 
+                await ApplyCspEvaluatorAsync(headers, item);
             }
             catch (Exception ex)
             {
                 item.Error = ex.Message;
             }
             return item;
+        }
+
+        private static async Task ApplyCspEvaluatorAsync(
+            Dictionary<string, string> headers,
+            ReportItem item)
+        {
+            if (!headers.TryGetValue("Content-Security-Policy", out var cspValue))
+                return;
+
+            var analysis = await AnalyzeCspAsync(cspValue);
+
+            var cspResult = item.Comparisons.HeaderChecks
+                .FirstOrDefault(h => h.Name.Equals("Content-Security-Policy", StringComparison.OrdinalIgnoreCase));
+
+            if (cspResult == null || analysis == null)
+                return;
+
+            if (analysis.Risk != CspRisk.Secure)
+                cspResult.Passed = false;
+
+            string riskMessage = analysis.Risk switch
+            {
+                CspRisk.Secure => "",
+                CspRisk.Weak => "Política fraca, ainda é possível injeção de scripts.",
+                CspRisk.Bypassable => "Política muito fraca, a injeção de scripts não é efetivamente bloqueada.",
+                _ => ""
+            };
+
+            if (!string.IsNullOrWhiteSpace(riskMessage))
+            {
+                if (string.IsNullOrEmpty(cspResult.Message))
+                    cspResult.Message = riskMessage;
+                else
+                    cspResult.Message += " | " + riskMessage;
+            }
+
+            var recommendations = analysis.Findings
+                .Where(f => f.Severity >= 30 && !string.IsNullOrWhiteSpace(f.Description))
+                .Select(f => f.Description!.Trim())
+                .Distinct()
+                .ToList();
+
+            if (recommendations.Any())
+            {
+                var evaluatorBlock =
+                    "<div class='csp-evaluator'>" +
+                    "<strong>CSP Evaluator:</strong><br>" +
+                    string.Join("<br>", recommendations) +
+                    "</div>";
+
+                if (string.IsNullOrWhiteSpace(cspResult.Expected))
+                    cspResult.Expected = evaluatorBlock;
+                else
+                    cspResult.Expected += "<br><br>" + evaluatorBlock;
+            }
         }
 
         public static ComparisonsResult CompareWithReference(Dictionary<string, string> headers)
@@ -58,8 +118,6 @@ namespace SecurityHeaderScannerGUI
             {
                 headers.TryGetValue(kv.Key, out var actual);
 
-                if (actual == null) continue;
-
                 var expected = kv.Value;
                 var hr = new HeaderCheckResult { Name = kv.Key, Expected = expected, Actual = actual };
 
@@ -69,7 +127,9 @@ namespace SecurityHeaderScannerGUI
                 }
                 else if (string.Equals(kv.Key, "Content-Security-Policy", StringComparison.OrdinalIgnoreCase))
                 {
-                    hr = CheckCsp(expected, actual);
+                    hr = CheckCspBaseline(actual);
+                    headerResults.Add(hr);
+                    continue;
                 }
                 else if (string.Equals(kv.Key, "Cross-Origin-Embedder-Policy", StringComparison.OrdinalIgnoreCase))
                 {
@@ -165,7 +225,10 @@ namespace SecurityHeaderScannerGUI
             var hr = new HeaderCheckResult
             {
                 Name = "Permissions-Policy",
-                Expected = "Diretivas mínimas esperadas: " + string.Join(", ", mandatoryDisabled),
+                Expected = "<div class='security-baseline'>" +
+                    "<strong>Diretivas obrigatórias:</strong>" +
+                    "<ul><li>" + string.Join("</li><li>", mandatoryDisabled.Select(d => $"{d}=()")) + "</li></ul>" +
+                    "</div>",
                 Actual = actual
             };
 
@@ -186,11 +249,15 @@ namespace SecurityHeaderScannerGUI
             {
                 hr.Passed = false;
 
-                hr.Expected = "Obrigatório declarar: " +
-                                  string.Join(", ", missingMandatory.Select(d => $"{d}=()"));
+                var list = missingMandatory.Select(d => $"{d}=()").ToList();
 
-                hr.Message = "Diretivas mínimas ausentes: " +
-                             string.Join(", ", missingMandatory);
+                hr.Expected =
+                    "<div class='security-baseline'>" +
+                    "<strong>Diretivas obrigatórias:</strong>" +
+                    "<ul><li>" + string.Join("</li><li>", list) + "</li></ul>" +
+                    "</div>";
+
+                hr.Message = "Diretivas mínimas ausentes";
 
                 return hr;
             }
@@ -281,71 +348,6 @@ namespace SecurityHeaderScannerGUI
             return hr;
         }
 
-        public static HeaderCheckResult CheckCsp(string expected, string actual)
-        {
-            var hr = new HeaderCheckResult
-            {
-                Name = "Content-Security-Policy",
-                Expected = "Obrigatórias: default-src 'self'; script-src 'self'",
-                Actual = actual
-            };
-
-            if (string.IsNullOrEmpty(actual))
-            {
-                hr.Passed = false;
-                hr.Message = "header ausente";
-                return hr;
-            }
-
-            var actualMap = ParseCspDirectives(actual);
-
-            // Diretivas obrigatórias
-            var mandatory = new Dictionary<string, string>
-            {
-                ["default-src"] = "'self'",
-                ["script-src"] = "'self'"
-            };
-
-            var missingMandatory = new List<string>();
-
-            foreach (var m in mandatory)
-            {
-                if (!actualMap.TryGetValue(m.Key, out var value) || !value.Contains(m.Value))
-                    missingMandatory.Add(m.Key);
-            }
-
-            if (missingMandatory.Any())
-            {
-                hr.Passed = false;
-                hr.Expected = "Obrigatórias: default-src 'self'; script-src 'self'";
-                hr.Message = "Faltando obrigatórias: " + string.Join(", ", missingMandatory);
-                return hr;
-            }
-
-            // Diretivas recomendadas (alerta apenas)
-            var expectedMap = ParseCspDirectives(expected);
-            var warnings = new List<string>();
-
-            foreach (var kv in expectedMap)
-            {
-                if (mandatory.ContainsKey(kv.Key))
-                    continue;
-
-                if (!actualMap.ContainsKey(kv.Key))
-                    warnings.Add(kv.Key);
-            }
-
-            hr.Passed = true;
-            hr.Expected = string.Empty;
-
-            if (warnings.Any())
-                hr.Message = WARNING + " Recomenda-se incluir: " + string.Join(", ", warnings);
-            else
-                hr.Message = "OK";
-
-            return hr;
-        }
-
         public static Dictionary<string, string> ParseDirectiveMap(string header)
         {
             var dict = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -364,26 +366,191 @@ namespace SecurityHeaderScannerGUI
             return dict;
         }
 
-        public static Dictionary<string, string> ParseCspDirectives(string s)
+        public static Dictionary<string, List<string>> ParseCspDirectives(string header)
         {
-            var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            var parts = s.Split(';').Select(p => p.Trim()).Where(p => !string.IsNullOrEmpty(p));
+            var map = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
 
-            foreach (var p in parts)
+            var directives = header.Split(';', StringSplitOptions.RemoveEmptyEntries);
+
+            foreach (var directive in directives)
             {
-                var idx = p.IndexOf(' ');
+                var parts = directive.Trim()
+                    .Split(' ', StringSplitOptions.RemoveEmptyEntries);
 
-                if (idx > 0)
-                {
-                    var name = p[..idx].ToLowerInvariant();
-                    var val = p[(idx + 1)..].Trim();
-                    map[name] = Regex.Replace(val, @"\s+", " ").Trim();
-                }
-                else map[p.ToLowerInvariant()] = "";
+                if (parts.Length == 0)
+                    continue;
+
+                var name = parts[0].ToLowerInvariant();
+                var values = parts.Skip(1).Select(v => v.Trim()).ToList();
+
+                map[name] = values;
             }
 
             return map;
         }
+
+        public static HeaderCheckResult CheckCspBaseline(string actual)
+        {
+            var hr = new HeaderCheckResult
+            {
+                Name = "Content-Security-Policy",
+                Actual = actual
+            };
+
+            // HEADER AUSENTE
+            if (string.IsNullOrWhiteSpace(actual))
+            {
+                hr.Passed = false;
+
+                var allDirectives = CspBaseline.MandatoryValues
+                    .Select(k => $"{k.Key} {string.Join(" ", k.Value)}")
+                    .ToList();
+
+                hr.Expected =
+                    "<div class='security-baseline'>" +
+                    "<strong>Diretivas obrigatórias:</strong>" +
+                    "<ul><li>" + string.Join("</li><li>", allDirectives) + "</li></ul>" +
+                    "</div>";
+
+                hr.Message = "header ausente";
+                return hr;
+            }
+
+
+            var map = ParseCspDirectives(actual);
+
+            var missingMandatory = new List<string>();
+            var wrongValue = new List<string>();
+
+            foreach (var directive in CspBaseline.MandatoryDirectives)
+            {
+                if (!map.ContainsKey(directive))
+                {
+                    missingMandatory.Add(directive);
+                    continue;
+                }
+
+                if (CspBaseline.MandatoryValues.TryGetValue(directive, out var expectedValues))
+                {
+                    var values = map[directive];
+
+                    if (!values.Any(v => expectedValues.Contains(v, StringComparer.OrdinalIgnoreCase)))
+                        wrongValue.Add(directive);
+                }
+            }
+
+            var missingRecommended = CspBaseline.RecommendedDirectives
+                .Where(d => !map.ContainsKey(d))
+                .ToList();
+
+            // NÃO CONFORME
+            if (missingMandatory.Any() || wrongValue.Any())
+            {
+                hr.Passed = false;
+
+                var expectedParts = new List<string>();
+
+                // faltantes
+                foreach (var m in missingMandatory)
+                    expectedParts.Add($"{m} {string.Join(" ", CspBaseline.MandatoryValues[m])}");
+
+                // valor inseguro (precisa corrigir)
+                foreach (var w in wrongValue)
+                    expectedParts.Add($"{w} {string.Join(" ", CspBaseline.MandatoryValues[w])}");
+
+                hr.Expected =
+                 "<div class='security-baseline'>" +
+                 "<strong>Diretivas obrigatórias:</strong>" +
+                 "<ul><li>" + string.Join("</li><li>", expectedParts) + "</li></ul>" +
+                 "</div>";
+
+
+                var parts = new List<string>();
+
+                if (wrongValue.Any())
+                    parts.Add("Diretivas com valor inseguro: " + string.Join(", ", wrongValue));
+
+                if (missingRecommended.Any())
+                    parts.Add("Recomendadas ausentes: " + string.Join(", ", missingRecommended));
+
+                hr.Message = string.Join(" | ", parts);
+                return hr;
+            }
+
+            // CONFORME
+            hr.Passed = true;
+            hr.Expected = string.Empty;
+
+            if (missingRecommended.Any())
+                hr.Message = WARNING + " Recomenda-se incluir: " + string.Join(", ", missingRecommended);
+            else
+                hr.Message = "";
+
+            return hr;
+        }
+
+        public static async Task<CspAnalysisResult?> AnalyzeCspAsync(string? cspHeader)
+        {
+            if (string.IsNullOrWhiteSpace(cspHeader))
+                return null;
+
+            var json = await RunCspEvaluator(cspHeader);
+
+            var findings = JsonSerializer.Deserialize<List<CspFinding>>(json,
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? new();
+
+            return new CspAnalysisResult
+            {
+                Risk = Classify(findings),
+                Findings = findings
+            };
+        }
+
+        public static async Task<string> RunCspEvaluator(string csp)
+        {
+            var nodePath = Path.Combine(AppContext.BaseDirectory, "tools", "csp", "node", "node.exe");
+            var scriptPath = Path.Combine(AppContext.BaseDirectory, "tools", "csp", "run.js");
+
+            var psi = new ProcessStartInfo
+            {
+                FileName = nodePath,
+                Arguments = $"\"{scriptPath}\" \"{csp.Replace("\"", "\\\"")}\"",
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                StandardOutputEncoding = Encoding.UTF8
+            };
+
+            using var process = Process.Start(psi);
+
+            string output = await process.StandardOutput.ReadToEndAsync();
+            string error = await process.StandardError.ReadToEndAsync();
+
+            await process.WaitForExitAsync();
+
+            if (process.ExitCode != 0)
+                throw new Exception($"CSP Engine error: {error}");
+
+            return output;
+        }
+
+        public static CspRisk Classify(IEnumerable<CspFinding> findings)
+        {
+            if (findings == null || !findings.Any())
+                return CspRisk.Secure;
+
+            int max = findings.Max(f => f.Severity);
+
+            if (max >= 50)
+                return CspRisk.Bypassable;
+
+            if (max >= 30 || max >= 10)
+                return CspRisk.Weak;
+
+            return CspRisk.Secure;
+        }
+
 
         public static string RenderHtml(List<ReportItem> items, string timestamp)
         {
@@ -469,6 +636,31 @@ namespace SecurityHeaderScannerGUI
                 .legend ul{
                     margin:6px 0 0 18px;
                 }
+
+                .csp-evaluator{
+                    background:#f0f7ff;
+                    border-left:4px solid #1d4ed8;
+                    padding:8px;
+                    border-radius:6px;
+                    font-size:13px;
+                }
+
+                .security-baseline{
+                    background:#fff5f5;
+                    border-left:4px solid #b42318;
+                    padding:8px;
+                    border-radius:6px;
+                    font-size:13px;
+                }
+
+                .security-baseline ul{
+                    margin:6px 0 0 18px;
+                    padding:0;
+                }
+
+                .security-baseline li{
+                    margin-bottom:2px;
+                }
                 </style>
                 ");
 
@@ -540,14 +732,22 @@ namespace SecurityHeaderScannerGUI
                         ? "<span class='warn'>⚠️</span>"
                         : h.Passed ? "<span class='ok'>✔️</span>" : "<span class='fail'>❌</span>";
 
+                    bool isRichHtml =
+                        headerName.Equals("Content-Security-Policy", StringComparison.OrdinalIgnoreCase) ||
+                        headerName.Equals("Permissions-Policy", StringComparison.OrdinalIgnoreCase);
+
+                    string expectedRendered = isRichHtml
+                        ? (expectedValue ?? "")
+                        : System.Net.WebUtility.HtmlEncode(expectedValue ?? "");
+
                     sb.AppendLine($@"
-                        <tr>
-                        <td>{System.Net.WebUtility.HtmlEncode(h.Name)}</td>
-                        <td>{status}</td>
-                        <td class='mono'>{System.Net.WebUtility.HtmlEncode(h.Actual ?? "(vazio)")}</td>
-                        <td class='mono'>{System.Net.WebUtility.HtmlEncode(expectedValue)}</td>
-                        <td>{System.Net.WebUtility.HtmlEncode(h.Message ?? "").Replace(WARNING, "")}</td>
-                        </tr>");
+                    <tr>
+                    <td>{System.Net.WebUtility.HtmlEncode(h.Name)}</td>
+                    <td>{status}</td>
+                    <td class='mono'>{System.Net.WebUtility.HtmlEncode(h.Actual ?? "(vazio)")}</td>
+                    <td class='mono'>{expectedRendered}</td>
+                    <td>{System.Net.WebUtility.HtmlEncode(h.Message ?? "").Replace(WARNING, "")}</td>
+                    </tr>");
                 }
 
                 sb.AppendLine("</table>");
@@ -637,5 +837,62 @@ namespace SecurityHeaderScannerGUI
 
             return outPath;
         }
+    }
+
+    public class CspFinding
+    {
+        public int Type { get; set; }
+        public string? Description { get; set; }
+        public int Severity { get; set; }
+        public string? Directive { get; set; }
+        public string? Value { get; set; }
+    }
+
+    public enum CspRisk
+    {
+        Secure,
+        Weak,
+        Bypassable
+    }
+
+    public class CspAnalysisResult
+    {
+        public CspRisk Risk { get; set; }
+        public List<CspFinding> Findings { get; set; } = new();
+    }
+
+    public static class CspBaseline
+    {
+        public static readonly string[] MandatoryDirectives =
+        {
+        "default-src",
+        "script-src",
+        "style-src",
+        "img-src",
+        "object-src",
+        "frame-ancestors",
+        "font-src",
+        "form-action",
+        "frame-src",
+        "base-uri",
+        "require-trusted-types-for"
+    };
+
+        public static readonly Dictionary<string, string[]> MandatoryValues = new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["default-src"] = new[] { "'self'" },
+            ["script-src"] = new[] { "'self'" },
+            ["style-src"] = new[] { "'self'" },
+            ["img-src"] = new[] { "'self'", "data:" },
+            ["font-src"] = new[] { "'self'" },
+            ["frame-src"] = new[] { "'self'" },
+            ["object-src"] = new[] { "'none'" },
+            ["frame-ancestors"] = new[] { "'none'" },
+            ["base-uri"] = new[] { "'self'" },
+            ["form-action"] = new[] { "'self'" },
+            ["require-trusted-types-for"] = new[] { "'script'" }
+        };
+
+        public static readonly string[] RecommendedDirectives = Array.Empty<string>();
     }
 }
