@@ -20,7 +20,7 @@ namespace SecurityHeaderScannerGUI
             ["Content-Security-Policy"] = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self';",
             ["X-Content-Type-Options"] = "nosniff",
             ["Referrer-Policy"] = "no-referrer",
-            ["Permissions-Policy"] = "",
+            ["Permissions-Policy"] = "", // método CheckPermissionsPolicy
             ["Cross-Origin-Opener-Policy"] = "same-origin",
             ["Cross-Origin-Resource-Policy"] = "same-origin",
             ["Cross-Origin-Embedder-Policy"] = "require-corp OR credentialless"
@@ -389,21 +389,97 @@ namespace SecurityHeaderScannerGUI
         {
             var sb = new StringBuilder();
             sb.AppendLine("<!doctype html><html><head><meta charset='utf-8'><title>Security Header Report</title>");
-            sb.AppendLine("<style>body{font-family:Arial,Helvetica,sans-serif;margin:20px} table{border-collapse:collapse;width:100%;margin-bottom:18px} th,td{border:1px solid #ddd;padding:8px} th{background:#f4f4f4} .ok{color:green;font-weight:700}.fail{color:red;font-weight:700}.mono{font-family:monospace;white-space:pre-wrap}</style>");
+
+            sb.AppendLine(@"
+                <style>
+                
+                @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+                
+                body{
+                    font-family:'Inter',system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
+                    margin:24px;
+                    background:#f7f9fb;
+                    color:#0f172a;
+                    font-weight:500;
+                    font-size:15px;
+                    line-height:1.5;
+                }
+
+                h2,h3{
+                    margin-top:28px;
+                }
+
+                table{
+                    border-collapse:separate;
+                    border-spacing:0;
+                    width:100%;
+                    background:white;
+                    box-shadow:0 2px 8px rgba(0,0,0,0.08);
+                    border-radius:8px;
+                    overflow:hidden;
+                    margin-bottom:24px;
+                }
+
+                th{
+                    background:#1f3b5c;
+                    color:#ffffff;
+                    text-align:left;
+                    padding:12px;
+                    font-size:14px;
+                    font-weight:600;
+                    letter-spacing:.4px;
+                }
+
+                td{
+                    padding:10px 12px;
+                    border-bottom:1px solid #e5e7eb;
+                    vertical-align:top;
+                    font-size:14px;
+                }
+
+                tr:last-child td{
+                    border-bottom:none;
+                }
+
+                tr:nth-child(even){
+                    background:#f9fbfd;
+                }
+
+                .ok{color:#067647;font-weight:800}
+                .fail{color:#b42318;font-weight:800}
+                .warn{color:#b54708;font-weight:800}
+                .missing{color:#912018;font-weight:800}
+
+                .mono{
+                    white-space:pre-wrap;
+                }
+
+                tr:has(.missing){ background:#fff0f0; }
+                tr:has(.fail){ background:#fff5f5; }
+                tr:has(.warn){ background:#fffaf0; }
+
+                .legend{
+                    background:white;
+                    border-radius:8px;
+                    padding:14px 18px;
+                    box-shadow:0 1px 6px rgba(0,0,0,0.08);
+                    margin-bottom:20px;
+                }
+
+                .legend ul{
+                    margin:6px 0 0 18px;
+                }
+                </style>
+                ");
+
             sb.AppendLine("</head><body>");
             sb.AppendLine($"<h1>Security Header Report</h1><p>Gerado: {DateTime.Now}</p>");
 
             foreach (var it in items)
             {
-                sb.AppendLine("<br>");
-
                 sb.AppendLine("<hr>");
 
                 sb.AppendLine($"<section><h2>{System.Net.WebUtility.HtmlEncode(it.Url)}</h2>");
-
-                sb.AppendLine("<hr>");
-
-                sb.AppendLine("<br>");
 
                 if (!string.IsNullOrEmpty(it.Error))
                 {
@@ -413,29 +489,65 @@ namespace SecurityHeaderScannerGUI
 
                 var headersSafe = it.Headers ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
-                var missingHeaders = ReferenceHeaders.Keys
-                    .Where(refKey => !headersSafe.ContainsKey(refKey))
-                    .ToList();
-
-                if (missingHeaders.Any())
-                {
-                    sb.AppendLine("<div style='background:#fff3cd;border:1px solid #ffeeba;padding:10px;margin-bottom:15px;border-radius:5px;'>");
-                    sb.AppendLine("<strong>⚠️ Headers de segurança ausentes:</strong><br>");
-                    sb.AppendLine(string.Join(", ", missingHeaders.Select(h => System.Net.WebUtility.HtmlEncode(h))));
-                    sb.AppendLine("</div>");
-                }
-
-                sb.AppendLine("<h3>Headers</h3>");
                 sb.AppendLine("<table><tr><th>Header</th><th>Status</th><th>Valor Atual</th><th>Esperado</th><th>Detalhes</th></tr>");
 
-                foreach (var h in it.Comparisons.HeaderChecks)
+                var existingHeaders = it.Comparisons.HeaderChecks
+                    .ToDictionary(h => h.Name, StringComparer.OrdinalIgnoreCase);
+
+                foreach (var kv in ReferenceHeaders)
                 {
+                    var headerName = kv.Key;
+                    existingHeaders.TryGetValue(headerName, out var h);
+
+                    // Header ausente
+
+                    if (h == null)
+                    {
+                        string expected = "";
+
+                        if (headerName.Equals("Permissions-Policy", StringComparison.OrdinalIgnoreCase))
+                        {
+                            var pp = CheckPermissionsPolicy(null);
+                            expected = pp.Expected;
+                        }
+                        else
+                        {
+                            ReferenceHeaders.TryGetValue(headerName, out expected);
+                        }
+
+                        sb.AppendLine($@"
+                            <tr>
+                            <td>{System.Net.WebUtility.HtmlEncode(headerName)}</td>
+                            <td><span class='missing'>⛔</span></td>
+                            <td></td>
+                            <td class='mono'>{System.Net.WebUtility.HtmlEncode(expected)}</td>
+                            <td>Header não configurado</td>
+                            </tr>");
+                        continue;
+                    }
+
+                    // Header presente
+
+                    string expectedValue;
+
+                    if (!string.IsNullOrWhiteSpace(h.Expected))
+                        expectedValue = h.Expected;
+                    else
+                        ReferenceHeaders.TryGetValue(h.Name, out expectedValue);
+
                     string status =
                         !string.IsNullOrEmpty(h.Message) && h.Message.StartsWith(WARNING)
                         ? "<span class='warn'>⚠️</span>"
                         : h.Passed ? "<span class='ok'>✔️</span>" : "<span class='fail'>❌</span>";
 
-                    sb.AppendLine($"<tr><td>{System.Net.WebUtility.HtmlEncode(h.Name)}</td><td>{status}</td><td class='mono'>{System.Net.WebUtility.HtmlEncode(h.Actual ?? "(vazio)")}</td><td class='mono'>{System.Net.WebUtility.HtmlEncode(h.Expected ?? "")}</td><td>{System.Net.WebUtility.HtmlEncode(h.Message ?? "").Replace(WARNING, "")}</td></tr>");
+                    sb.AppendLine($@"
+                        <tr>
+                        <td>{System.Net.WebUtility.HtmlEncode(h.Name)}</td>
+                        <td>{status}</td>
+                        <td class='mono'>{System.Net.WebUtility.HtmlEncode(h.Actual ?? "(vazio)")}</td>
+                        <td class='mono'>{System.Net.WebUtility.HtmlEncode(expectedValue)}</td>
+                        <td>{System.Net.WebUtility.HtmlEncode(h.Message ?? "").Replace(WARNING, "")}</td>
+                        </tr>");
                 }
 
                 sb.AppendLine("</table>");
@@ -447,31 +559,30 @@ namespace SecurityHeaderScannerGUI
                 }
                 else
                 {
-                    sb.AppendLine("<p class='ok'>Informações do servidor ocultas (bom).</p>");
+                    sb.AppendLine("<p class='ok'>Informações do servidor ocultas (conforme).</p>");
                 }
 
                 sb.AppendLine("</section><hr/>");
             }
 
-            sb.AppendLine(@"
-                <div style='background:#eef3f7;
-                            border:1px solid #cfd8e3;
-                            padding:12px;
-                            margin:15px 0;
-                            border-radius:6px;'>
+            // Legenda
+            sb.AppendLine(GetLegenda());
 
+            sb.AppendLine("</body></html>");
+            return sb.ToString();
+        }
+
+        private static string GetLegenda() => @"
+                <div class='legend'>
                 <strong>Legenda:</strong>
                 <ul style='margin-top:8px'>
                     <li><span class='ok'>✔️ Conforme</span>: Configuração correta, nenhuma ação necessária</li>
                     <li><span class='warn'>⚠️ Atenção</span>: Deve ser analisado e, se possível, ajustado para ficar conforme</li>
                     <li><span class='fail'>❌ Não conforme</span>: Erro identificado, deve ser corrigido</li>
+                    <li><span class='missing'>⛔ Ausente</span>: Header de segurança ausente, deve ser implementado</li>
                 </ul>
                 </div>
-                ");
-
-            sb.AppendLine("</body></html>");
-            return sb.ToString();
-        }
+                ";
     }
 
     public class ReportItem
