@@ -225,10 +225,6 @@ namespace SecurityHeaderScannerGUI
             var hr = new HeaderCheckResult
             {
                 Name = "Permissions-Policy",
-                Expected = "<div class='security-baseline'>" +
-                    "<strong>Diretivas obrigatórias:</strong>" +
-                    "<ul><li>" + string.Join("</li><li>", mandatoryDisabled.Select(d => $"{d}=()")) + "</li></ul>" +
-                    "</div>",
                 Actual = actual
             };
 
@@ -236,6 +232,13 @@ namespace SecurityHeaderScannerGUI
             {
                 hr.Passed = false;
                 hr.Message = "header ausente";
+
+                hr.Expected =
+                    "<div class='security-baseline'>" +
+                    "<strong>Diretivas obrigatórias:</strong>" +
+                    "<ul><li>" + string.Join("</li><li>", mandatoryDisabled.Select(d => $"{d}=()")) + "</li></ul>" +
+                    "</div>";
+
                 return hr;
             }
 
@@ -276,6 +279,7 @@ namespace SecurityHeaderScannerGUI
                 .ToList();
 
             hr.Passed = true;
+            hr.Expected = "";
 
             if (warnings.Any())
             {
@@ -285,7 +289,7 @@ namespace SecurityHeaderScannerGUI
             }
             else
             {
-                hr.Message = "OK";
+                hr.Message = "";
             }
 
             return hr;
