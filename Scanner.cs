@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
+using System.Reflection.PortableExecutable;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -32,26 +33,132 @@ namespace SecurityHeaderScannerGUI
 
         public static async Task<ReportItem> AnalyzeUrl(string url)
         {
-            var item = new ReportItem { Url = url, TimestampUtc = DateTime.UtcNow };
+            url = TreatURL(url);
+
+            var item = new ReportItem
+            {
+                Url = url,
+                TimestampUtc = DateTime.UtcNow
+            };
+
             try
             {
                 using var req = new HttpRequestMessage(HttpMethod.Get, url);
                 using var res = await _http.SendAsync(req);
-                var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-                foreach (var h in res.Headers) headers[h.Key] = string.Join("; ", h.Value);
-                foreach (var h in res.Content.Headers) headers[h.Key] = string.Join("; ", h.Value);
+
+                var headers = GetHeaders(res);
+
                 item.Headers = headers;
 
                 item.Comparisons = CompareWithReference(headers);
 
                 // Integração CSP Evaluator (Google) 
                 await ApplyCspEvaluatorAsync(headers, item);
+
+                var cookies = GetCookie(res);
+
+                item.Cookies = cookies;
+                item.CookieChecks = AnalyzeCookies(cookies);
             }
             catch (Exception ex)
             {
                 item.Error = ex.Message;
             }
             return item;
+        }
+
+        private static List<ParsedCookie> GetCookie(HttpResponseMessage res)
+        {
+            var cookies = new List<ParsedCookie>();
+            if (res.Headers.TryGetValues("Set-Cookie", out var setCookies))
+            {
+                foreach (var raw in setCookies)
+                {
+                    cookies.Add(ParseCookie(raw));
+                }
+            }
+            return cookies;
+        }
+
+        private static ParsedCookie ParseCookie(string raw)
+        {
+            var parts = raw.Split(';', StringSplitOptions.RemoveEmptyEntries)
+                           .Select(p => p.Trim())
+                           .ToList();
+
+            var first = parts[0].Split('=', 2);
+
+            var cookie = new ParsedCookie
+            {
+                Name = first[0],
+                Value = first.Length > 1 ? first[1] : "",
+                Raw = raw
+            };
+
+            foreach (var p in parts.Skip(1))
+            {
+                if (p.Equals("Secure", StringComparison.OrdinalIgnoreCase))
+                    cookie.Secure = true;
+
+                if (p.Equals("HttpOnly", StringComparison.OrdinalIgnoreCase))
+                    cookie.HttpOnly = true;
+
+                if (p.StartsWith("SameSite", StringComparison.OrdinalIgnoreCase))
+                {
+                    var sp = p.Split('=');
+                    if (sp.Length == 2)
+                        cookie.SameSite = sp[1];
+                }
+            }
+
+            return cookie;
+        }
+
+        private static List<CookieCheckResult> AnalyzeCookies(List<ParsedCookie> cookies)
+        {
+            var results = new List<CookieCheckResult>();
+
+            foreach (var c in cookies)
+            {
+                var r = new CookieCheckResult
+                {
+                    Name = c.Name,
+                    Secure = c.Secure,
+                    HttpOnly = c.HttpOnly,
+                    SameSite = c.SameSite
+                };
+
+                var problems = new List<string>();
+
+                if (!c.Secure)
+                    problems.Add("Secure ausente");
+
+                if (!c.HttpOnly)
+                    problems.Add("HttpOnly ausente");
+
+                if (string.IsNullOrEmpty(c.SameSite))
+                    problems.Add("SameSite ausente");
+
+                r.Passed = problems.Count == 0;
+                r.Message = string.Join("; ", problems);
+
+                results.Add(r);
+            }
+
+            return results;
+        }
+
+        private static Dictionary<string, string> GetHeaders(HttpResponseMessage res)
+        {
+            var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var h in res.Headers)
+                headers[h.Key] = string.Join("; ", h.Value);
+
+            foreach (var h in res.Content.Headers)
+                headers[h.Key] = string.Join("; ", h.Value);
+
+            return headers;
         }
 
         private static async Task ApplyCspEvaluatorAsync(
@@ -107,6 +214,27 @@ namespace SecurityHeaderScannerGUI
                 else
                     cspResult.Expected += "<br><br>" + evaluatorBlock;
             }
+        }
+
+        private static string TreatURL(string url)
+        {
+            if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) ||
+                (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+            {
+                url = $"https://{url.TrimStart('/')}";
+            }
+
+            return url;
+        }
+
+        private static List<string> ParseUrlList(string input)
+        {
+            return input
+                .Split(new[] { '\r', '\n', ',', ';', ' ' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(u => u.Trim())
+                .Where(u => !string.IsNullOrWhiteSpace(u))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
         }
 
         public static ComparisonsResult CompareWithReference(Dictionary<string, string> headers)
@@ -756,6 +884,45 @@ namespace SecurityHeaderScannerGUI
 
                 sb.AppendLine("</table>");
 
+                /* =========================
+                   COOKIES
+                ========================= */
+
+                if (it.CookieChecks != null && it.CookieChecks.Any())
+                {
+                    sb.AppendLine("<h3>Cookies</h3>");
+                    sb.AppendLine("<table>");
+                    sb.AppendLine("<tr><th>Cookie</th><th>Status</th><th>Secure</th><th>HttpOnly</th><th>SameSite</th><th>Detalhes</th></tr>");
+
+                    foreach (var c in it.CookieChecks)
+                    {
+                        string status = c.Passed
+                            ? "<span class='ok'>✔️</span>"
+                            : "<span class='fail'>❌</span>";
+
+                        sb.AppendLine($@"
+                            <tr>
+                                <td>{System.Net.WebUtility.HtmlEncode(c.Name)}</td>
+                                <td>{status}</td>
+                                <td>{(c.Secure ? "✔️" : "❌")}</td>
+                                <td>{(c.HttpOnly ? "✔️" : "❌")}</td>
+                                <td>{System.Net.WebUtility.HtmlEncode(c.SameSite ?? "(ausente)")}</td>
+                                <td>{System.Net.WebUtility.HtmlEncode(c.Message)}</td>
+                            </tr>");
+                    }
+
+                    sb.AppendLine("</table>");
+                }
+                else
+                {
+                    sb.AppendLine("<h3>Cookies</h3>");
+                    sb.AppendLine("<p class='ok'>Nenhum cookie identificado na resposta HTTP.</p>");
+                }
+
+                /* =========================
+                   SERVER EXPOSURE
+                ========================= */
+
                 sb.AppendLine("<h3>Server exposure</h3>");
                 if (it.Comparisons.ServerExposed)
                 {
@@ -796,6 +963,8 @@ namespace SecurityHeaderScannerGUI
         public string? Error { get; set; }
         public Dictionary<string, string>? Headers { get; set; }
         public ComparisonsResult Comparisons { get; set; } = new ComparisonsResult();
+        public List<ParsedCookie>? Cookies { get; set; }
+        public List<CookieCheckResult>? CookieChecks { get; set; }
     }
 
     public class ComparisonsResult
@@ -825,15 +994,36 @@ namespace SecurityHeaderScannerGUI
         public string Raw { get; set; } = "";
     }
 
+    public class CookieCheckResult
+    {
+        public string Name { get; set; } = "";
+        public bool Secure { get; set; }
+        public bool HttpOnly { get; set; }
+        public string? SameSite { get; set; }
+
+        public bool Passed { get; set; }
+        public string Message { get; set; } = "";
+    }
+
     public static class Scanner
     {
-        public static async Task<string> RunScan(List<string> urls)
+        public static async Task<string> RunScan(List<string> urls, Action<int>? progress = null)
         {
             Directory.CreateDirectory("Reports");
             var reportItems = new List<ReportItem>();
 
+            int total = urls.Count;
+            int done = 0;
+
             foreach (var url in urls)
+            {
                 reportItems.Add(await SecurityAnalyzer.AnalyzeUrl(url));
+
+                done++;
+                int percent = (int)((done / (double)total) * 100);
+
+                progress?.Invoke(percent);
+            }
 
             var timestamp = DateTime.UtcNow.ToString("yyyyMMdd_HHmmss");
             var outPath = Path.Combine("Reports", $"report_{timestamp}.html");

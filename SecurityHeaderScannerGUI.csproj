@@ -8,4 +8,10 @@
   <ItemGroup>
   <None Include="tools\csp\**\*.*" CopyToOutputDirectory="PreserveNewest" />
 </ItemGroup>
+
+  <ItemGroup>
+    <Compile Update="UrlListForm.cs">
+      <SubType>Form</SubType>
+    </Compile>
+  </ItemGroup>
 </Project>

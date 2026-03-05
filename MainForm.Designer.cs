@@ -6,6 +6,8 @@ namespace SecurityHeaderScannerGUI
         private System.Windows.Forms.FlowLayoutPanel flowUrls;
         private System.Windows.Forms.Button btnAdd;
         private System.Windows.Forms.Button btnScan;
+        private System.Windows.Forms.Button btnAddList;
+        private System.Windows.Forms.ProgressBar progressBar;
 
         protected override void Dispose(bool disposing)
         {
@@ -19,7 +21,11 @@ namespace SecurityHeaderScannerGUI
             this.flowUrls = new System.Windows.Forms.FlowLayoutPanel();
             this.btnAdd = new System.Windows.Forms.Button();
             this.btnScan = new System.Windows.Forms.Button();
+            this.btnAddList = new System.Windows.Forms.Button();
+            this.progressBar = new System.Windows.Forms.ProgressBar();
+
             this.SuspendLayout();
+
             // 
             // flowUrls
             // 
@@ -29,7 +35,11 @@ namespace SecurityHeaderScannerGUI
             this.flowUrls.Location = new System.Drawing.Point(12, 12);
             this.flowUrls.Name = "flowUrls";
             this.flowUrls.Size = new System.Drawing.Size(560, 300);
-            this.flowUrls.Anchor = System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Bottom | System.Windows.Forms.AnchorStyles.Left | System.Windows.Forms.AnchorStyles.Right;
+            this.flowUrls.Anchor = System.Windows.Forms.AnchorStyles.Top
+                                 | System.Windows.Forms.AnchorStyles.Bottom
+                                 | System.Windows.Forms.AnchorStyles.Left
+                                 | System.Windows.Forms.AnchorStyles.Right;
+
             // 
             // btnAdd
             // 
@@ -41,6 +51,19 @@ namespace SecurityHeaderScannerGUI
             this.btnAdd.Text = "+ Adicionar URL";
             this.btnAdd.UseVisualStyleBackColor = true;
             this.btnAdd.Click += new System.EventHandler(this.btnAdd_Click);
+
+            // 
+            // btnAddList
+            // 
+            this.btnAddList.Font = new System.Drawing.Font("Segoe UI", 10F);
+            this.btnAddList.Location = new System.Drawing.Point(160, 320);
+            this.btnAddList.Name = "btnAddList";
+            this.btnAddList.Size = new System.Drawing.Size(160, 40);
+            this.btnAddList.TabIndex = 3;
+            this.btnAddList.Text = "Adicionar por lista";
+            this.btnAddList.UseVisualStyleBackColor = true;
+            this.btnAddList.Click += new System.EventHandler(this.btnAddList_Click);
+
             // 
             // btnScan
             // 
@@ -52,15 +75,32 @@ namespace SecurityHeaderScannerGUI
             this.btnScan.Text = "Iniciar Scan";
             this.btnScan.UseVisualStyleBackColor = true;
             this.btnScan.Click += new System.EventHandler(this.btnScan_Click);
+
+            // 
+            // progressBar
+            // 
+            this.progressBar.Location = new System.Drawing.Point(12, 365);
+            this.progressBar.Name = "progressBar";
+            this.progressBar.Size = new System.Drawing.Size(560, 12);
+            this.progressBar.Minimum = 0;
+            this.progressBar.Maximum = 100;
+            this.progressBar.Value = 0;
+            this.progressBar.Anchor = System.Windows.Forms.AnchorStyles.Bottom
+                                    | System.Windows.Forms.AnchorStyles.Left
+                                    | System.Windows.Forms.AnchorStyles.Right;
+
             // 
             // MainForm
             // 
             this.ClientSize = new System.Drawing.Size(584, 381);
             this.Controls.Add(this.flowUrls);
             this.Controls.Add(this.btnAdd);
+            this.Controls.Add(this.btnAddList);
             this.Controls.Add(this.btnScan);
+            this.Controls.Add(this.progressBar);
             this.Name = "MainForm";
             this.Text = "Security Header Scanner GUI";
+
             this.ResumeLayout(false);
         }
     }

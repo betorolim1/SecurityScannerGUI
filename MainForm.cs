@@ -73,12 +73,18 @@ namespace SecurityHeaderScannerGUI
                 return;
             }
 
+            progressBar.Value = 0;
+
             btnScan.Enabled = false;
             btnAdd.Enabled = false;
 
             try
             {
-                string report = await Scanner.RunScan(urls);
+                string report = await Scanner.RunScan(urls, p =>
+                {
+                    progressBar.Value = p;
+                });
+                
                 System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
                 {
                     FileName = report,
@@ -92,6 +98,22 @@ namespace SecurityHeaderScannerGUI
 
             btnScan.Enabled = true;
             btnAdd.Enabled = true;
+        }
+
+        private void btnAddList_Click(object sender, EventArgs e)
+        {
+            var form = new UrlListForm();
+
+            if (form.ShowDialog() == DialogResult.OK)
+            {
+                var urls = form.UrlsText
+                    .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+                    .Select(u => u.Trim())
+                    .Where(u => !string.IsNullOrWhiteSpace(u));
+
+                foreach (var url in urls)
+                    AddUrlField(url);
+            }
         }
     }
 }
