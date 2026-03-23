@@ -52,7 +52,6 @@ namespace SecurityHeaderScannerGUI
 
                 item.Comparisons = CompareWithReference(headers);
 
-                // Integração CSP Evaluator (Google) 
                 await ApplyCspEvaluatorAsync(headers, item);
 
                 var cookies = GetCookie(res);
@@ -127,6 +126,15 @@ namespace SecurityHeaderScannerGUI
                     HttpOnly = c.HttpOnly,
                     SameSite = c.SameSite
                 };
+
+                if (c.Name.Equals("Abacaxi", StringComparison.OrdinalIgnoreCase))
+                {
+                    r.Ignored = true;
+                    r.Passed = true;
+                    r.Message = "Cookie do F5 (não gerenciável)";
+                    results.Add(r);
+                    continue;
+                }
 
                 var problems = new List<string>();
 
@@ -312,6 +320,32 @@ namespace SecurityHeaderScannerGUI
                     headerResults.Add(hr);
                     continue;
                 }
+                else if (string.Equals(kv.Key, "Cross-Origin-Resource-Policy", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (string.IsNullOrEmpty(actual))
+                    {
+                        hr.Passed = false;
+                        hr.Message = "header ausente";
+                    }
+                    else if (Normalize(actual) == "same-origin")
+                    {
+                        hr.Passed = true;
+                        hr.Message = string.Empty;
+                    }
+                    else if (Normalize(actual) == "same-site")
+                    {
+                        hr.Passed = false;
+                        hr.Message = WARNING + " Valor permitido, mas menos seguro que same-origin";
+                    }
+                    else
+                    {
+                        hr.Passed = false;
+                        hr.Message = "valor diferente";
+                    }
+
+                    headerResults.Add(hr);
+                    continue;
+                }
                 else
                 {
                     hr.Passed = !string.IsNullOrEmpty(actual) && Normalize(actual) == Normalize(expected);
@@ -339,7 +373,7 @@ namespace SecurityHeaderScannerGUI
         public static HeaderCheckResult CheckPermissionsPolicy(string actual)
         {
             var mandatoryDisabled = new[]
-{
+            {
                 "usb",
                 "serial",
                 "hid",
@@ -393,7 +427,6 @@ namespace SecurityHeaderScannerGUI
                 return hr;
             }
 
-            // Apenas alerta
             var sensitiveGov = new[]
             {
                 "camera",
@@ -529,7 +562,6 @@ namespace SecurityHeaderScannerGUI
                 Actual = actual
             };
 
-            // HEADER AUSENTE
             if (string.IsNullOrWhiteSpace(actual))
             {
                 hr.Passed = false;
@@ -547,7 +579,6 @@ namespace SecurityHeaderScannerGUI
                 hr.Message = "header ausente";
                 return hr;
             }
-
 
             var map = ParseCspDirectives(actual);
 
@@ -575,18 +606,15 @@ namespace SecurityHeaderScannerGUI
                 .Where(d => !map.ContainsKey(d))
                 .ToList();
 
-            // NÃO CONFORME
             if (missingMandatory.Any() || wrongValue.Any())
             {
                 hr.Passed = false;
 
                 var expectedParts = new List<string>();
 
-                // faltantes
                 foreach (var m in missingMandatory)
                     expectedParts.Add($"{m} {string.Join(" ", CspBaseline.MandatoryValues[m])}");
 
-                // valor inseguro (precisa corrigir)
                 foreach (var w in wrongValue)
                     expectedParts.Add($"{w} {string.Join(" ", CspBaseline.MandatoryValues[w])}");
 
@@ -595,7 +623,6 @@ namespace SecurityHeaderScannerGUI
                  "<strong>Diretivas obrigatórias:</strong>" +
                  "<ul><li>" + string.Join("</li><li>", expectedParts) + "</li></ul>" +
                  "</div>";
-
 
                 var parts = new List<string>();
 
@@ -609,7 +636,6 @@ namespace SecurityHeaderScannerGUI
                 return hr;
             }
 
-            // CONFORME
             hr.Passed = true;
             hr.Expected = string.Empty;
 
@@ -683,137 +709,408 @@ namespace SecurityHeaderScannerGUI
             return CspRisk.Secure;
         }
 
+        // ═══════════════════════════════════════════════════════
+        // RENDER HTML — Relatório visual redesenhado
+        // ═══════════════════════════════════════════════════════
 
         public static string RenderHtml(List<ReportItem> items, string timestamp)
         {
-            var sb = new StringBuilder();
-            sb.AppendLine("<!doctype html><html><head><meta charset='utf-8'><title>Security Header Report</title>");
-
-            sb.AppendLine(@"
-                <style>
-                
-                @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-                
-                body{
-                    font-family:'Inter',system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
-                    margin:24px;
-                    background:#f7f9fb;
-                    color:#0f172a;
-                    font-weight:500;
-                    font-size:15px;
-                    line-height:1.5;
-                }
-
-                h2,h3{
-                    margin-top:28px;
-                }
-
-                table{
-                    border-collapse:separate;
-                    border-spacing:0;
-                    width:100%;
-                    background:white;
-                    box-shadow:0 2px 8px rgba(0,0,0,0.08);
-                    border-radius:8px;
-                    overflow:hidden;
-                    margin-bottom:24px;
-                }
-
-                th{
-                    background:#1f3b5c;
-                    color:#ffffff;
-                    text-align:left;
-                    padding:12px;
-                    font-size:14px;
-                    font-weight:600;
-                    letter-spacing:.4px;
-                }
-
-                td{
-                    padding:10px 12px;
-                    border-bottom:1px solid #e5e7eb;
-                    vertical-align:top;
-                    font-size:14px;
-                }
-
-                tr:last-child td{
-                    border-bottom:none;
-                }
-
-                tr:nth-child(even){
-                    background:#f9fbfd;
-                }
-
-                .ok{color:#067647;font-weight:800}
-                .fail{color:#b42318;font-weight:800}
-                .warn{color:#b54708;font-weight:800}
-                .missing{color:#912018;font-weight:800}
-
-                .mono{
-                    white-space:pre-wrap;
-                }
-
-                tr:has(.missing){ background:#fff0f0; }
-                tr:has(.fail){ background:#fff5f5; }
-                tr:has(.warn){ background:#fffaf0; }
-
-                .legend{
-                    background:white;
-                    border-radius:8px;
-                    padding:14px 18px;
-                    box-shadow:0 1px 6px rgba(0,0,0,0.08);
-                    margin-bottom:20px;
-                }
-
-                .legend ul{
-                    margin:6px 0 0 18px;
-                }
-
-                .csp-evaluator{
-                    background:#f0f7ff;
-                    border-left:4px solid #1d4ed8;
-                    padding:8px;
-                    border-radius:6px;
-                    font-size:13px;
-                }
-
-                .security-baseline{
-                    background:#fff5f5;
-                    border-left:4px solid #b42318;
-                    padding:8px;
-                    border-radius:6px;
-                    font-size:13px;
-                }
-
-                .security-baseline ul{
-                    margin:6px 0 0 18px;
-                    padding:0;
-                }
-
-                .security-baseline li{
-                    margin-bottom:2px;
-                }
-                </style>
-                ");
-
-            sb.AppendLine("</head><body>");
-            sb.AppendLine($"<h1>Security Header Report</h1><p>Gerado: {DateTime.Now}</p>");
-
+            // Contadores globais
+            int totalOk = 0, totalFail = 0, totalWarn = 0, totalMissing = 0;
             foreach (var it in items)
             {
-                sb.AppendLine("<hr>");
+                if (it.Error != null) continue;
+                foreach (var h in it.Comparisons.HeaderChecks)
+                {
+                    if (string.IsNullOrEmpty(h.Actual) && !h.Passed) totalMissing++;
+                    else if (!string.IsNullOrEmpty(h.Message) && h.Message.StartsWith(WARNING)) totalWarn++;
+                    else if (h.Passed) totalOk++;
+                    else totalFail++;
+                }
+            }
+            int totalChecks = totalOk + totalFail + totalWarn + totalMissing;
 
-                sb.AppendLine($"<section><h2>{System.Net.WebUtility.HtmlEncode(it.Url)}</h2>");
+            var sb = new StringBuilder();
+            sb.AppendLine("<!doctype html><html lang='pt-BR'><head><meta charset='utf-8'>");
+            sb.AppendLine("<meta name='viewport' content='width=device-width, initial-scale=1'>");
+            sb.AppendLine("<title>Security Header Report</title>");
+
+            // ── CSS ──
+            sb.AppendLine("<style>");
+            sb.AppendLine(@"
+:root {
+    --bg-body: #0f1117;
+    --bg-card: #1a1d28;
+    --bg-card-alt: #1f2233;
+    --bg-header: #12131c;
+    --bg-table-head: #242840;
+    --bg-table-row-even: #16181f;
+    --bg-input: #282a36;
+    --text-primary: #e6e8f0;
+    --text-secondary: #8c91a5;
+    --text-muted: #5a5f75;
+    --green: #2ecc71;
+    --green-dim: rgba(46,204,113,0.12);
+    --red: #e74c3c;
+    --red-dim: rgba(231,76,60,0.10);
+    --orange: #f39c12;
+    --orange-dim: rgba(243,156,18,0.10);
+    --blue: #3b82f6;
+    --blue-dim: rgba(59,130,246,0.10);
+    --border: #2a2d3e;
+    --radius: 10px;
+    --radius-sm: 6px;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: var(--bg-body);
+    color: var(--text-primary);
+    line-height: 1.6;
+    padding: 0;
+    font-size: 14px;
+}
+
+/* ── HEADER PRINCIPAL ── */
+.report-header {
+    background: linear-gradient(135deg, #12131c 0%, #1a1d28 50%, #12131c 100%);
+    border-bottom: 1px solid var(--border);
+    padding: 40px 48px;
+}
+
+.report-header h1 {
+    font-size: 28px;
+    font-weight: 700;
+    color: var(--text-primary);
+    margin-bottom: 4px;
+    letter-spacing: -0.5px;
+}
+
+.report-header h1 .shield { color: var(--green); margin-right: 10px; }
+
+.report-header .meta {
+    color: var(--text-secondary);
+    font-size: 13px;
+    margin-top: 6px;
+}
+
+/* ── RESUMO GLOBAL ── */
+.summary-bar {
+    display: flex;
+    gap: 16px;
+    padding: 24px 48px;
+    background: var(--bg-card);
+    border-bottom: 1px solid var(--border);
+    flex-wrap: wrap;
+}
+
+.summary-card {
+    flex: 1;
+    min-width: 140px;
+    background: var(--bg-card-alt);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px 20px;
+    text-align: center;
+}
+
+.summary-card .number {
+    font-size: 32px;
+    font-weight: 700;
+    line-height: 1;
+}
+
+.summary-card .label {
+    font-size: 12px;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    margin-top: 6px;
+}
+
+.summary-card.ok .number { color: var(--green); }
+.summary-card.fail .number { color: var(--red); }
+.summary-card.warn .number { color: var(--orange); }
+.summary-card.missing .number { color: var(--red); }
+.summary-card.total .number { color: var(--blue); }
+
+/* ── CONTEÚDO ── */
+.content { padding: 32px 48px; }
+
+/* ── URL SECTION ── */
+.url-section {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    margin-bottom: 32px;
+    overflow: hidden;
+}
+
+.url-header {
+    background: var(--bg-header);
+    padding: 18px 24px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.url-header h2 {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text-primary);
+    word-break: break-all;
+    font-family: 'Consolas', 'Courier New', monospace;
+}
+
+.url-header .url-icon {
+    font-size: 20px;
+    flex-shrink: 0;
+}
+
+.url-body { padding: 24px; }
+
+.error-box {
+    background: var(--red-dim);
+    border: 1px solid rgba(231,76,60,0.3);
+    border-radius: var(--radius-sm);
+    padding: 14px 18px;
+    color: var(--red);
+    font-weight: 500;
+}
+
+/* ── TABELAS ── */
+table {
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    margin-bottom: 20px;
+}
+
+thead th {
+    background: var(--bg-table-head);
+    color: var(--text-secondary);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    padding: 12px 14px;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+}
+
+tbody td {
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+    font-size: 13px;
+}
+
+tbody tr:last-child td { border-bottom: none; }
+tbody tr:nth-child(even) { background: var(--bg-table-row-even); }
+
+td.mono {
+    font-family: 'Consolas', 'Courier New', monospace;
+    font-size: 12px;
+    word-break: break-all;
+    color: var(--text-secondary);
+}
+
+/* ── BADGES DE STATUS ── */
+.badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 10px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.badge-ok { background: var(--green-dim); color: var(--green); }
+.badge-fail { background: var(--red-dim); color: var(--red); }
+.badge-warn { background: var(--orange-dim); color: var(--orange); }
+.badge-missing { background: var(--red-dim); color: var(--red); }
+
+/* ── SUB-SEÇÕES (cookies, server) ── */
+.sub-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    margin: 24px 0 12px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+}
+
+.server-ok {
+    background: var(--green-dim);
+    border: 1px solid rgba(46,204,113,0.25);
+    border-radius: var(--radius-sm);
+    padding: 12px 16px;
+    color: var(--green);
+    font-weight: 500;
+    font-size: 13px;
+}
+
+.server-exposed {
+    background: var(--red-dim);
+    border: 1px solid rgba(231,76,60,0.25);
+    border-radius: var(--radius-sm);
+    padding: 12px 16px;
+    color: var(--red);
+    font-weight: 500;
+    font-size: 13px;
+}
+
+.no-cookies {
+    color: var(--green);
+    font-weight: 500;
+    font-size: 13px;
+    padding: 8px 0;
+}
+
+/* ── LEGENDA ── */
+.legend-section {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px 24px;
+    margin-top: 16px;
+}
+
+.legend-section h3 {
+    font-size: 14px;
+    font-weight: 600;
+    margin-bottom: 12px;
+    color: var(--text-secondary);
+}
+
+.legend-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 8px;
+}
+
+.legend-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+/* ── BLOCOS CSP/BASELINE ── */
+.csp-evaluator {
+    background: var(--blue-dim);
+    border-left: 3px solid var(--blue);
+    padding: 10px 14px;
+    border-radius: var(--radius-sm);
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-top: 6px;
+}
+
+.csp-evaluator strong { color: var(--blue); }
+
+.security-baseline {
+    background: var(--red-dim);
+    border-left: 3px solid var(--red);
+    padding: 10px 14px;
+    border-radius: var(--radius-sm);
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-top: 6px;
+}
+
+.security-baseline strong { color: var(--red); }
+.security-baseline ul { margin: 6px 0 0 18px; padding: 0; }
+.security-baseline li { margin-bottom: 2px; }
+
+/* ── FOOTER ── */
+.report-footer {
+    text-align: center;
+    padding: 24px;
+    color: var(--text-muted);
+    font-size: 12px;
+    border-top: 1px solid var(--border);
+    margin-top: 16px;
+}
+
+/* ── PRINT ── */
+@media print {
+    body { background: white; color: #111; font-size: 11px; padding: 12px; }
+    .report-header { background: #f5f5f5; padding: 20px; }
+    .report-header h1 { color: #111; font-size: 20px; }
+    .summary-bar { background: #fafafa; padding: 12px; }
+    .summary-card { background: white; border: 1px solid #ddd; }
+    .summary-card .number { font-size: 24px; }
+    .url-section { border: 1px solid #ddd; }
+    .url-header { background: #f0f0f0; }
+    .url-header h2 { color: #111; }
+    table { border: 1px solid #ccc; }
+    thead th { background: #e8e8e8; color: #333; }
+    tbody td { border-bottom: 1px solid #eee; }
+    .badge-ok { background: #e8f5e9; color: #2e7d32; }
+    .badge-fail { background: #ffebee; color: #c62828; }
+    .badge-warn { background: #fff8e1; color: #f57f17; }
+    .badge-missing { background: #ffebee; color: #c62828; }
+    .content { padding: 12px 0; }
+}
+
+.badge-ignored { background: rgba(100,104,120,0.15); color: #8c91a5; }
+
+tr.row-ignored td { opacity: 0.5; }
+            ");
+            sb.AppendLine("</style></head><body>");
+
+            // ── HEADER ──
+            sb.AppendLine($@"
+<div class='report-header'>
+    <h1><span class='shield'>&#x1F6E1;</span>Security Header Report</h1>
+    <div class='meta'>Gerado em {DateTime.Now:dd/MM/yyyy} &agrave;s {DateTime.Now:HH:mm:ss} &mdash; {items.Count} sistema(s) analisado(s)</div>
+</div>");
+
+            // ── RESUMO GLOBAL ──
+            sb.AppendLine($@"
+<div class='summary-bar'>
+    <div class='summary-card total'><div class='number'>{totalChecks}</div><div class='label'>Verificações</div></div>
+    <div class='summary-card ok'><div class='number'>{totalOk}</div><div class='label'>Conforme</div></div>
+    <div class='summary-card warn'><div class='number'>{totalWarn}</div><div class='label'>Atenção</div></div>
+    <div class='summary-card fail'><div class='number'>{totalFail}</div><div class='label'>Não conforme</div></div>
+    <div class='summary-card missing'><div class='number'>{totalMissing}</div><div class='label'>Ausente</div></div>
+</div>");
+
+            sb.AppendLine("<div class='content'>");
+
+            // ── URLs ──
+            foreach (var it in items)
+            {
+                sb.AppendLine("<div class='url-section'>");
+                sb.AppendLine($@"
+<div class='url-header'>
+    <span class='url-icon'>🌐</span>
+    <h2>{System.Net.WebUtility.HtmlEncode(it.Url)}</h2>
+</div>");
+
+                sb.AppendLine("<div class='url-body'>");
 
                 if (!string.IsNullOrEmpty(it.Error))
                 {
-                    sb.AppendLine($"<p style='color:red'>Erro: {System.Net.WebUtility.HtmlEncode(it.Error)}</p></section>");
+                    sb.AppendLine($"<div class='error-box'>Erro: {System.Net.WebUtility.HtmlEncode(it.Error)}</div>");
+                    sb.AppendLine("</div></div>");
                     continue;
                 }
 
-                var headersSafe = it.Headers ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-
-                sb.AppendLine("<table><tr><th>Header</th><th>Status</th><th>Valor Atual</th><th>Esperado</th><th>Detalhes</th></tr>");
+                // Tabela de headers
+                sb.AppendLine("<table><thead><tr><th>Header</th><th>Status</th><th>Valor Atual</th><th>Esperado</th><th>Detalhes</th></tr></thead><tbody>");
 
                 var existingHeaders = it.Comparisons.HeaderChecks
                     .ToDictionary(h => h.Name, StringComparer.OrdinalIgnoreCase);
@@ -822,8 +1119,6 @@ namespace SecurityHeaderScannerGUI
                 {
                     var headerName = kv.Key;
                     existingHeaders.TryGetValue(headerName, out var h);
-
-                    // Header ausente
 
                     if (h == null)
                     {
@@ -840,17 +1135,15 @@ namespace SecurityHeaderScannerGUI
                         }
 
                         sb.AppendLine($@"
-                            <tr>
-                            <td>{System.Net.WebUtility.HtmlEncode(headerName)}</td>
-                            <td><span class='missing'>⛔</span></td>
-                            <td></td>
-                            <td class='mono'>{System.Net.WebUtility.HtmlEncode(expected)}</td>
-                            <td>Header não configurado</td>
-                            </tr>");
+<tr>
+    <td><strong>{System.Net.WebUtility.HtmlEncode(headerName)}</strong></td>
+    <td><span class='badge badge-missing'>&#x26D4; Ausente</span></td>
+    <td class='mono'>&mdash;</td>
+    <td class='mono'>{expected}</td>
+    <td>Header não configurado</td>
+</tr>");
                         continue;
                     }
-
-                    // Header presente
 
                     string expectedValue;
 
@@ -859,10 +1152,13 @@ namespace SecurityHeaderScannerGUI
                     else
                         ReferenceHeaders.TryGetValue(h.Name, out expectedValue);
 
-                    string status =
-                        !string.IsNullOrEmpty(h.Message) && h.Message.StartsWith(WARNING)
-                        ? "<span class='warn'>⚠️</span>"
-                        : h.Passed ? "<span class='ok'>✔️</span>" : "<span class='fail'>❌</span>";
+                    bool isWarning = !string.IsNullOrEmpty(h.Message) && h.Message.StartsWith(WARNING);
+
+                    string status = isWarning
+                        ? "<span class='badge badge-warn'>&#x26A0;&#xFE0F; Atenção</span>"
+                        : h.Passed
+                            ? "<span class='badge badge-ok'>&#x2714;&#xFE0F; OK</span>"
+                            : "<span class='badge badge-fail'>&#x274C; Falha</span>";
 
                     bool isRichHtml =
                         headerName.Equals("Content-Security-Policy", StringComparison.OrdinalIgnoreCase) ||
@@ -872,88 +1168,97 @@ namespace SecurityHeaderScannerGUI
                         ? (expectedValue ?? "")
                         : System.Net.WebUtility.HtmlEncode(expectedValue ?? "");
 
+                    string details = System.Net.WebUtility.HtmlEncode(h.Message ?? "").Replace(WARNING, "");
+
                     sb.AppendLine($@"
-                    <tr>
-                    <td>{System.Net.WebUtility.HtmlEncode(h.Name)}</td>
-                    <td>{status}</td>
-                    <td class='mono'>{System.Net.WebUtility.HtmlEncode(h.Actual ?? "(vazio)")}</td>
-                    <td class='mono'>{expectedRendered}</td>
-                    <td>{System.Net.WebUtility.HtmlEncode(h.Message ?? "").Replace(WARNING, "")}</td>
-                    </tr>");
+<tr>
+    <td><strong>{System.Net.WebUtility.HtmlEncode(h.Name)}</strong></td>
+    <td>{status}</td>
+    <td class='mono'>{System.Net.WebUtility.HtmlEncode(h.Actual ?? "(vazio)")}</td>
+    <td class='mono'>{expectedRendered}</td>
+    <td>{details}</td>
+</tr>");
                 }
 
-                sb.AppendLine("</table>");
+                sb.AppendLine("</tbody></table>");
 
-                /* =========================
-                   COOKIES
-                ========================= */
+                // ── Cookies ──
+                sb.AppendLine("<div class='sub-title'>Cookies</div>");
 
                 if (it.CookieChecks != null && it.CookieChecks.Any())
                 {
-                    sb.AppendLine("<h3>Cookies</h3>");
-                    sb.AppendLine("<table>");
-                    sb.AppendLine("<tr><th>Cookie</th><th>Status</th><th>Secure</th><th>HttpOnly</th><th>SameSite</th><th>Detalhes</th></tr>");
+                    sb.AppendLine("<table><thead><tr><th>Cookie</th><th>Status</th><th>Secure</th><th>HttpOnly</th><th>SameSite</th><th>Detalhes</th></tr></thead><tbody>");
 
                     foreach (var c in it.CookieChecks)
                     {
-                        string status = c.Passed
-                            ? "<span class='ok'>✔️</span>"
-                            : "<span class='fail'>❌</span>";
+                        string status = c.Ignored
+                            ? "<span class='badge badge-ignored'>&#x23F8; Ignorado</span>"
+                            : c.Passed
+                                ? "<span class='badge badge-ok'>&#x2714;&#xFE0F; OK</span>"
+                                : "<span class='badge badge-fail'>&#x274C; Falha</span>";
+
+                        string secBadge = c.Secure
+                            ? "<span class='badge badge-ok'>&#x2714;&#xFE0F;</span>"
+                            : "<span class='badge badge-fail'>&#x274C;</span>";
+                        string httpBadge = c.HttpOnly
+                            ? "<span class='badge badge-ok'>&#x2714;&#xFE0F;</span>"
+                            : "<span class='badge badge-fail'>&#x274C;</span>";
 
                         sb.AppendLine($@"
-                            <tr>
-                                <td>{System.Net.WebUtility.HtmlEncode(c.Name)}</td>
-                                <td>{status}</td>
-                                <td>{(c.Secure ? "✔️" : "❌")}</td>
-                                <td>{(c.HttpOnly ? "✔️" : "❌")}</td>
-                                <td>{System.Net.WebUtility.HtmlEncode(c.SameSite ?? "(ausente)")}</td>
-                                <td>{System.Net.WebUtility.HtmlEncode(c.Message)}</td>
-                            </tr>");
+<tr class='{(c.Ignored ? "row-ignored" : "")}'>
+    <td><strong>{System.Net.WebUtility.HtmlEncode(c.Name)}</strong></td>
+    <td>{status}</td>
+    <td>{secBadge}</td>
+    <td>{httpBadge}</td>
+    <td>{System.Net.WebUtility.HtmlEncode(c.SameSite ?? "(ausente)")}</td>
+    <td>{System.Net.WebUtility.HtmlEncode(c.Message)}</td>
+</tr>");
                     }
 
-                    sb.AppendLine("</table>");
+                    sb.AppendLine("</tbody></table>");
                 }
                 else
                 {
-                    sb.AppendLine("<h3>Cookies</h3>");
-                    sb.AppendLine("<p class='ok'>Nenhum cookie identificado na resposta HTTP.</p>");
+                    sb.AppendLine("<p class='no-cookies'>Nenhum cookie identificado na resposta HTTP.</p>");
                 }
 
-                /* =========================
-                   SERVER EXPOSURE
-                ========================= */
-
-                sb.AppendLine("<h3>Server exposure</h3>");
+                // ── Server exposure ──
+                sb.AppendLine("<div class='sub-title'>Server Exposure</div>");
                 if (it.Comparisons.ServerExposed)
                 {
-                    sb.AppendLine($"<p class='fail'>Cabeçalhos expõem informações do servidor. Server: {System.Net.WebUtility.HtmlEncode(it.Comparisons.ServerHeader ?? "(vazio)")}; X-Powered-By: {System.Net.WebUtility.HtmlEncode(it.Comparisons.XPoweredBy ?? "(vazio)")}</p>");
+                    sb.AppendLine($"<div class='server-exposed'>Cabeçalhos expõem informações do servidor. <strong>Server:</strong> {System.Net.WebUtility.HtmlEncode(it.Comparisons.ServerHeader ?? "(vazio)")} &mdash; <strong>X-Powered-By:</strong> {System.Net.WebUtility.HtmlEncode(it.Comparisons.XPoweredBy ?? "(vazio)")}</div>");
                 }
                 else
                 {
-                    sb.AppendLine("<p class='ok'>Informações do servidor ocultas (conforme).</p>");
+                    sb.AppendLine("<div class='server-ok'>Informações do servidor ocultas (conforme).</div>");
                 }
 
-                sb.AppendLine("</section><hr/>");
+                sb.AppendLine("</div>"); // url-body
+                sb.AppendLine("</div>"); // url-section
             }
 
-            // Legenda
-            sb.AppendLine(GetLegenda());
+            // ── Legenda ──
+            sb.AppendLine(@"
+<div class='legend-section'>
+    <h3>Legenda</h3>
+    <div class='legend-grid'>
+        <div class='legend-item'><span class='badge badge-ok'>&#x2714;&#xFE0F; OK</span> Configuração correta</div>
+        <div class='legend-item'><span class='badge badge-warn'>&#x26A0;&#xFE0F; Atenção</span> Deve ser analisado</div>
+        <div class='legend-item'><span class='badge badge-fail'>&#x274C; Falha</span> Deve ser corrigido</div>
+        <div class='legend-item'><span class='badge badge-missing'>&#x26D4; Ausente</span> Deve ser implementado</div>
+    </div>
+</div>");
 
+            // ── Footer ──
+            sb.AppendLine($@"
+<div class='report-footer'>
+    Security Header Scanner &mdash; CGSIC/MAPA &mdash; Relatório gerado em {DateTime.Now:dd/MM/yyyy HH:mm:ss}
+</div>");
+
+            sb.AppendLine("</div>"); // content
             sb.AppendLine("</body></html>");
             return sb.ToString();
         }
-
-        private static string GetLegenda() => @"
-                <div class='legend'>
-                <strong>Legenda:</strong>
-                <ul style='margin-top:8px'>
-                    <li><span class='ok'>✔️ Conforme</span>: Configuração correta, nenhuma ação necessária</li>
-                    <li><span class='warn'>⚠️ Atenção</span>: Deve ser analisado e, se possível, ajustado para ficar conforme</li>
-                    <li><span class='fail'>❌ Não conforme</span>: Erro identificado, deve ser corrigido</li>
-                    <li><span class='missing'>⛔ Ausente</span>: Header de segurança ausente, deve ser implementado</li>
-                </ul>
-                </div>
-                ";
     }
 
     public class ReportItem
@@ -1000,6 +1305,7 @@ namespace SecurityHeaderScannerGUI
         public bool Secure { get; set; }
         public bool HttpOnly { get; set; }
         public string? SameSite { get; set; }
+        public bool Ignored { get; set; }
 
         public bool Passed { get; set; }
         public string Message { get; set; } = "";
@@ -1059,18 +1365,18 @@ namespace SecurityHeaderScannerGUI
     {
         public static readonly string[] MandatoryDirectives =
         {
-        "default-src",
-        "script-src",
-        "style-src",
-        "img-src",
-        "object-src",
-        "frame-ancestors",
-        "font-src",
-        "form-action",
-        "frame-src",
-        "base-uri",
-        "require-trusted-types-for"
-    };
+            "default-src",
+            "script-src",
+            "style-src",
+            "img-src",
+            "object-src",
+            "frame-ancestors",
+            "font-src",
+            "form-action",
+            "frame-src",
+            "base-uri",
+            "require-trusted-types-for"
+        };
 
         public static readonly Dictionary<string, string[]> MandatoryValues = new(StringComparer.OrdinalIgnoreCase)
         {
