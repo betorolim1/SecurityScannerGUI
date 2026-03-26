@@ -436,7 +436,7 @@ namespace SecurityHeaderScannerGUI
             };
 
             var warnings = sensitiveGov
-                .Where(d => policy.ContainsKey(d) && policy[d] != "()")
+                .Where(d => policy.ContainsKey(d) && policy[d] == "*")
                 .ToList();
 
             hr.Passed = true;
@@ -720,12 +720,33 @@ namespace SecurityHeaderScannerGUI
             foreach (var it in items)
             {
                 if (it.Error != null) continue;
+
+                // Headers
                 foreach (var h in it.Comparisons.HeaderChecks)
                 {
                     if (string.IsNullOrEmpty(h.Actual) && !h.Passed) totalMissing++;
                     else if (!string.IsNullOrEmpty(h.Message) && h.Message.StartsWith(WARNING)) totalWarn++;
                     else if (h.Passed) totalOk++;
                     else totalFail++;
+                }
+
+                // Server Exposure (1 verificação por URL)
+                if (it.Comparisons.ServerExposed)
+                    totalFail++;
+                else
+                    totalOk++;
+
+                // Cookies (1 verificação por cookie)
+                if (it.CookieChecks != null)
+                {
+                    foreach (var c in it.CookieChecks)
+                    {
+                        if (c.Ignored) continue;
+
+                        if (c.Secure) totalOk++; else totalFail++;
+                        if (c.HttpOnly) totalOk++; else totalFail++;
+                        if (!string.IsNullOrEmpty(c.SameSite)) totalOk++; else totalFail++;
+                    }
                 }
             }
             int totalChecks = totalOk + totalFail + totalWarn + totalMissing;
@@ -1068,6 +1089,49 @@ td.mono {
 .badge-ignored { background: rgba(100,104,120,0.15); color: #8c91a5; }
 
 tr.row-ignored td { opacity: 0.5; }
+
+/* ── TOOLTIP INFO ── */
+.info-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    font-size: 13px;
+    font-weight: 400;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.08);
+    color: var(--text-muted);
+    cursor: help;
+    position: relative;
+    margin-left: 4px;
+    vertical-align: middle;
+}
+
+.info-icon:hover { background: rgba(255,255,255,0.15); color: var(--text-secondary); }
+
+.info-icon .info-tip {
+    visibility: hidden;
+    opacity: 0;
+    position: absolute;
+    bottom: calc(100% + 8px);
+    left: 50%;
+    transform: translateX(-50%);
+    background: #2a2d3e;
+    color: var(--text-primary);
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 400;
+    white-space: nowrap;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+    border: 1px solid var(--border);
+    transition: opacity 0.2s;
+    z-index: 10;
+    pointer-events: none;
+}
+
+.info-icon:hover .info-tip { visibility: visible; opacity: 1; }
             ");
             sb.AppendLine("</style></head><body>");
 
@@ -1081,11 +1145,11 @@ tr.row-ignored td { opacity: 0.5; }
             // ── RESUMO GLOBAL ──
             sb.AppendLine($@"
 <div class='summary-bar'>
-    <div class='summary-card total'><div class='number'>{totalChecks}</div><div class='label'>Verificações</div></div>
-    <div class='summary-card ok'><div class='number'>{totalOk}</div><div class='label'>Conforme</div></div>
-    <div class='summary-card warn'><div class='number'>{totalWarn}</div><div class='label'>Atenção</div></div>
-    <div class='summary-card fail'><div class='number'>{totalFail}</div><div class='label'>Não conforme</div></div>
-    <div class='summary-card missing'><div class='number'>{totalMissing}</div><div class='label'>Ausente</div></div>
+    <div class='summary-card total'><div class='number'>{totalChecks}</div><div class='label'>Verificações <span class='info-icon'>&#x2139;<span class='info-tip'>Total de verificações realizadas (headers, cookies e server exposure)</span></span></div></div>
+    <div class='summary-card ok'><div class='number'>{totalOk}</div><div class='label'>Conforme <span class='info-icon'>&#x2139;<span class='info-tip'>Configurações que atendem ao baseline de segurança</span></span></div></div>
+    <div class='summary-card warn'><div class='number'>{totalWarn}</div><div class='label'>Atenção <span class='info-icon'>&#x2139;<span class='info-tip'>Valor permitido, mas menos seguro que o recomendado</span></span></div></div>
+    <div class='summary-card fail'><div class='number'>{totalFail}</div><div class='label'>Não conforme <span class='info-icon'>&#x2139;<span class='info-tip'>Configurações com valor incorreto, flags de cookie ausentes ou informações do servidor visíveis</span></span></div></div>
+    <div class='summary-card missing'><div class='number'>{totalMissing}</div><div class='label'>Ausente <span class='info-icon'>&#x2139;<span class='info-tip'>Headers de segurança não configurados</span></span></div></div>
 </div>");
 
             sb.AppendLine("<div class='content'>");
@@ -1154,11 +1218,15 @@ tr.row-ignored td { opacity: 0.5; }
 
                     bool isWarning = !string.IsNullOrEmpty(h.Message) && h.Message.StartsWith(WARNING);
 
-                    string status = isWarning
-                        ? "<span class='badge badge-warn'>&#x26A0;&#xFE0F; Atenção</span>"
-                        : h.Passed
-                            ? "<span class='badge badge-ok'>&#x2714;&#xFE0F; OK</span>"
-                            : "<span class='badge badge-fail'>&#x274C; Falha</span>";
+                    string status;
+                    if (isWarning)
+                        status = "<span class='badge badge-warn'>&#x26A0;&#xFE0F; Atenção</span>";
+                    else if (h.Passed)
+                        status = "<span class='badge badge-ok'>&#x2714;&#xFE0F; OK</span>";
+                    else if (string.IsNullOrEmpty(h.Actual))
+                        status = "<span class='badge badge-missing'>&#x26D4; Ausente</span>";
+                    else
+                        status = "<span class='badge badge-fail'>&#x274C; Falha</span>";
 
                     bool isRichHtml =
                         headerName.Equals("Content-Security-Policy", StringComparison.OrdinalIgnoreCase) ||
@@ -1204,13 +1272,17 @@ tr.row-ignored td { opacity: 0.5; }
                             ? "<span class='badge badge-ok'>&#x2714;&#xFE0F;</span>"
                             : "<span class='badge badge-fail'>&#x274C;</span>";
 
+                        string sameSiteBadge = !string.IsNullOrEmpty(c.SameSite)
+                            ? System.Net.WebUtility.HtmlEncode(c.SameSite)
+                            : "<span class='badge badge-fail'>&#x274C;</span>";
+
                         sb.AppendLine($@"
 <tr class='{(c.Ignored ? "row-ignored" : "")}'>
     <td><strong>{System.Net.WebUtility.HtmlEncode(c.Name)}</strong></td>
     <td>{status}</td>
     <td>{secBadge}</td>
     <td>{httpBadge}</td>
-    <td>{System.Net.WebUtility.HtmlEncode(c.SameSite ?? "(ausente)")}</td>
+    <td>{sameSiteBadge}</td>
     <td>{System.Net.WebUtility.HtmlEncode(c.Message)}</td>
 </tr>");
                     }

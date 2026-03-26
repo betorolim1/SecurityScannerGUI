@@ -93,6 +93,17 @@ namespace SecurityHeaderScannerGUI
 
         private void btnAdd_Click(object sender, EventArgs e)
         {
+            var lastPanel = flowUrls.Controls.OfType<Panel>().LastOrDefault();
+            if (lastPanel != null)
+            {
+                var lastTxt = lastPanel.Controls.OfType<TextBox>().FirstOrDefault();
+                if (lastTxt != null && string.IsNullOrWhiteSpace(lastTxt.Text))
+                {
+                    lastTxt.Focus();
+                    return;
+                }
+            }
+
             AddUrlField();
         }
 
@@ -163,8 +174,22 @@ namespace SecurityHeaderScannerGUI
                     .Select(u => u.Trim())
                     .Where(u => !string.IsNullOrWhiteSpace(u));
 
-                foreach (var url in urls)
-                    AddUrlField(url);
+                if (urls.Any())
+                {
+                    var lastPanel = flowUrls.Controls.OfType<Panel>().LastOrDefault();
+                    if (lastPanel != null)
+                    {
+                        var lastTxt = lastPanel.Controls.OfType<TextBox>().FirstOrDefault();
+                        if (lastTxt != null && string.IsNullOrWhiteSpace(lastTxt.Text))
+                        {
+                            flowUrls.Controls.Remove(lastPanel);
+                            lastPanel.Dispose();
+                        }
+                    }
+
+                    foreach (var url in urls)
+                        AddUrlField(url);
+                }
             }
         }
     }

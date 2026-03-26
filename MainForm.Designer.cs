@@ -89,39 +89,39 @@ namespace SecurityHeaderScannerGUI
             // ═══════════════════════════════════════════
             this.panelHeader.BackColor = bgHeader;
             this.panelHeader.Dock = System.Windows.Forms.DockStyle.Top;
-            this.panelHeader.Height = 72;
+            this.panelHeader.Height = 82;
 
             this.lblIcon.AutoSize = true;
             this.lblIcon.Text = "\U0001F6E1";
             this.lblIcon.Font = new System.Drawing.Font("Segoe UI Emoji", 22F);
             this.lblIcon.ForeColor = accentGreen;
-            this.lblIcon.Location = new System.Drawing.Point(20, 14);
+            this.lblIcon.Location = new System.Drawing.Point(16, 12);
             this.lblIcon.BackColor = bgHeader;
 
             this.lblTitle.AutoSize = true;
             this.lblTitle.Text = "Security Header Scanner";
             this.lblTitle.Font = new System.Drawing.Font("Segoe UI", 15F, System.Drawing.FontStyle.Bold);
             this.lblTitle.ForeColor = textPrimary;
-            this.lblTitle.Location = new System.Drawing.Point(66, 14);
+            this.lblTitle.Location = new System.Drawing.Point(72, 14);
             this.lblTitle.BackColor = bgHeader;
 
             this.lblSubtitle.AutoSize = true;
             this.lblSubtitle.Text = "Análise de cabeçalhos de segurança HTTP";
             this.lblSubtitle.Font = new System.Drawing.Font("Segoe UI", 9F);
             this.lblSubtitle.ForeColor = textSecondary;
-            this.lblSubtitle.Location = new System.Drawing.Point(68, 44);
+            this.lblSubtitle.Location = new System.Drawing.Point(74, 54);
             this.lblSubtitle.BackColor = bgHeader;
 
-            this.panelHeader.Controls.Add(this.lblIcon);
             this.panelHeader.Controls.Add(this.lblTitle);
             this.panelHeader.Controls.Add(this.lblSubtitle);
+            this.panelHeader.Controls.Add(this.lblIcon);
 
             // ═══════════════════════════════════════════
             // panelUrlContainer — card com a lista de URLs
             // ═══════════════════════════════════════════
             this.panelUrlContainer.BackColor = bgCard;
             this.panelUrlContainer.Location = new System.Drawing.Point(20, 84);
-            this.panelUrlContainer.Size = new System.Drawing.Size(600, 300);
+            this.panelUrlContainer.Size = new System.Drawing.Size(710, 380);
             this.panelUrlContainer.Anchor = System.Windows.Forms.AnchorStyles.Top
                                           | System.Windows.Forms.AnchorStyles.Bottom
                                           | System.Windows.Forms.AnchorStyles.Left
@@ -133,7 +133,7 @@ namespace SecurityHeaderScannerGUI
             this.lblUrlsHeader.ForeColor = textSecondary;
             this.lblUrlsHeader.BackColor = System.Drawing.Color.FromArgb(28, 30, 40);
             this.lblUrlsHeader.Location = new System.Drawing.Point(0, 0);
-            this.lblUrlsHeader.Size = new System.Drawing.Size(600, 34);
+            this.lblUrlsHeader.Size = new System.Drawing.Size(710, 34);
             this.lblUrlsHeader.TextAlign = System.Drawing.ContentAlignment.MiddleLeft;
             this.lblUrlsHeader.Padding = new System.Windows.Forms.Padding(8, 0, 0, 0);
             this.lblUrlsHeader.Anchor = System.Windows.Forms.AnchorStyles.Top
@@ -146,7 +146,7 @@ namespace SecurityHeaderScannerGUI
             this.flowUrls.WrapContents = false;
             this.flowUrls.BackColor = bgCard;
             this.flowUrls.Location = new System.Drawing.Point(0, 34);
-            this.flowUrls.Size = new System.Drawing.Size(600, 266);
+            this.flowUrls.Size = new System.Drawing.Size(710, 346);
             this.flowUrls.Padding = new System.Windows.Forms.Padding(8, 6, 8, 6);
             this.flowUrls.Anchor = System.Windows.Forms.AnchorStyles.Top
                                   | System.Windows.Forms.AnchorStyles.Bottom
@@ -160,8 +160,8 @@ namespace SecurityHeaderScannerGUI
             // progressBar — linha fina entre card e botões
             // ═══════════════════════════════════════════
             this.progressBar.Style = System.Windows.Forms.ProgressBarStyle.Continuous;
-            this.progressBar.Location = new System.Drawing.Point(20, 388);
-            this.progressBar.Size = new System.Drawing.Size(600, 4);
+            this.progressBar.Location = new System.Drawing.Point(20, 468);
+            this.progressBar.Size = new System.Drawing.Size(710, 4);
             this.progressBar.Minimum = 0;
             this.progressBar.Maximum = 100;
             this.progressBar.Value = 0;
@@ -173,8 +173,8 @@ namespace SecurityHeaderScannerGUI
             // panelActions — barra de botões
             // ═══════════════════════════════════════════
             this.panelActions.BackColor = bgDark;
-            this.panelActions.Location = new System.Drawing.Point(20, 396);
-            this.panelActions.Size = new System.Drawing.Size(600, 52);
+            this.panelActions.Location = new System.Drawing.Point(20, 476);
+            this.panelActions.Size = new System.Drawing.Size(710, 52);
             this.panelActions.Anchor = System.Windows.Forms.AnchorStyles.Bottom
                                      | System.Windows.Forms.AnchorStyles.Left
                                      | System.Windows.Forms.AnchorStyles.Right;
@@ -218,7 +218,7 @@ namespace SecurityHeaderScannerGUI
             this.btnScan.ForeColor = System.Drawing.Color.FromArgb(10, 10, 10);
             this.btnScan.Font = new System.Drawing.Font("Segoe UI", 10F, System.Drawing.FontStyle.Bold);
             this.btnScan.Size = new System.Drawing.Size(148, 38);
-            this.btnScan.Location = new System.Drawing.Point(452, 7);
+            this.btnScan.Location = new System.Drawing.Point(562, 7);
             this.btnScan.Text = "\u25B6  Iniciar Scan";
             this.btnScan.Cursor = System.Windows.Forms.Cursors.Hand;
             this.btnScan.TabIndex = 3;
@@ -274,7 +274,7 @@ namespace SecurityHeaderScannerGUI
             // ═══════════════════════════════════════════
             this.BackColor = bgDark;
             this.ForeColor = textPrimary;
-            this.ClientSize = new System.Drawing.Size(640, 480);
+            this.ClientSize = new System.Drawing.Size(750, 550);
             this.MinimumSize = new System.Drawing.Size(540, 360);
             this.StartPosition = System.Windows.Forms.FormStartPosition.CenterScreen;
             this.Font = new System.Drawing.Font("Segoe UI", 9.5F);
