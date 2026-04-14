@@ -136,6 +136,16 @@ namespace SecurityHeaderScannerGUI
                     continue;
                 }
 
+                // Cookies TS* do F5 (bot defense / persistence)
+                if (Regex.IsMatch(c.Name, @"^TS[0-9a-fA-F]+$", RegexOptions.IgnoreCase))
+                {
+                    r.Ignored = true;
+                    r.Passed = true;
+                    r.Message = "Cookie do F5 (não gerenciável)";
+                    results.Add(r);
+                    continue;
+                }
+
                 var problems = new List<string>();
 
                 if (!c.Secure)
