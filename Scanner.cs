@@ -26,18 +26,31 @@ namespace SecurityHeaderScannerGUI
             ["Permissions-Policy"] = "",
             ["Cross-Origin-Opener-Policy"] = "same-origin",
             ["Cross-Origin-Resource-Policy"] = "same-origin",
-            ["Cross-Origin-Embedder-Policy"] = "require-corp OR credentialless"
+            ["Cross-Origin-Embedder-Policy"] = "require-corp OR credentialless",
+            ["Cache-Control"] = ""
+        };
+
+        static readonly HashSet<string> ApiOnlyHeaders = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "Strict-Transport-Security",
+            "X-Content-Type-Options",
+            "Cache-Control",
+            "X-Frame-Options",
+            "Content-Security-Policy",
+            "Referrer-Policy",
+            "Cross-Origin-Resource-Policy"
         };
 
         static readonly string WARNING = "!warning!";
 
-        public static async Task<ReportItem> AnalyzeUrl(string url)
+        public static async Task<ReportItem> AnalyzeUrl(string url, bool isApi = false)
         {
             url = TreatURL(url);
 
             var item = new ReportItem
             {
                 Url = url,
+                IsApi = isApi,
                 TimestampUtc = DateTime.UtcNow
             };
 
@@ -50,9 +63,10 @@ namespace SecurityHeaderScannerGUI
 
                 item.Headers = headers;
 
-                item.Comparisons = CompareWithReference(headers);
+                item.Comparisons = CompareWithReference(headers, isApi);
 
-                await ApplyCspEvaluatorAsync(headers, item);
+                if (!isApi)
+                    await ApplyCspEvaluatorAsync(headers, item);
 
                 var cookies = GetCookie(res);
 
@@ -194,28 +208,78 @@ namespace SecurityHeaderScannerGUI
             if (cspResult == null || analysis == null)
                 return;
 
-            if (analysis.Risk != CspRisk.Secure)
+            bool hasUnsafeInline = cspValue?.Contains("unsafe-inline", StringComparison.OrdinalIgnoreCase) == true;
+
+            if (hasUnsafeInline)
+            {
                 cspResult.Passed = false;
-
-            string riskMessage = analysis.Risk switch
-            {
-                CspRisk.Secure => "",
-                CspRisk.Weak => "Política fraca, ainda é possível injeção de scripts.",
-                CspRisk.Bypassable => "Política muito fraca, a injeção de scripts não é efetivamente bloqueada.",
-                _ => ""
-            };
-
-            if (!string.IsNullOrWhiteSpace(riskMessage))
-            {
-                if (string.IsNullOrEmpty(cspResult.Message))
-                    cspResult.Message = riskMessage;
-                else
-                    cspResult.Message += " | " + riskMessage;
             }
 
-            var recommendations = analysis.Findings
-                .Where(f => f.Severity >= 30 && !string.IsNullOrWhiteSpace(f.Description))
-                .Select(f => f.Description!.Trim())
+            string selfMessage = WARNING + "O uso de 'self' em script-src amplia a superfície de ataque caso o domínio hospede JSONP, AngularJS legado ou conteúdo enviado por usuários. Sempre que possível, utilize uma política mais restritiva baseada em origens específicas, hashes ou nonces.";
+
+            bool hasSelfWarning =
+                analysis.Findings.Any(f =>
+                    f.Description?.Contains("'self'", StringComparison.OrdinalIgnoreCase) == true);
+
+            if (hasSelfWarning && cspResult.Passed)
+            {
+                cspResult.Message = selfMessage;
+            }
+            else if (analysis.Risk != CspRisk.Secure)
+            {
+                cspResult.Passed = false;
+
+                string riskMessage = analysis.Risk switch
+                {
+                    CspRisk.Secure => "",
+                    CspRisk.Weak => "A injeção de scripts não é efetivamente bloqueada.",
+                    CspRisk.Bypassable => "A injeção de scripts não é efetivamente bloqueada.",
+                    _ => ""
+                };
+
+                if (hasSelfWarning)
+                {
+                    cspResult.Message = riskMessage + "\n\n" + selfMessage;
+                }
+                else if (!string.IsNullOrWhiteSpace(riskMessage))
+                {
+                    cspResult.Message = riskMessage;
+                }
+            }
+
+            var recommendations = new List<string>();
+
+            foreach (var finding in analysis.Findings)
+            {
+                if (string.IsNullOrWhiteSpace(finding.Description))
+                    continue;
+
+                var desc = finding.Description.Trim();
+
+                if (desc.Contains("'self' can be problematic", StringComparison.OrdinalIgnoreCase) &&
+                    desc.Contains("No bypass found", StringComparison.OrdinalIgnoreCase))
+                {
+                    recommendations.Add(
+                        WARNING +
+                        " CSP Evaluator: uso de 'self'. Validar se o domínio não hospeda JSONP, AngularJS legado ou arquivos enviados por usuários.");
+                }
+                else if (finding.Severity >= 30)
+                {
+                    recommendations.Add(desc);
+                }
+            }
+
+            if (hasUnsafeInline)
+            {
+                string unsafeInlineMsg = "unsafe-inline não é aceito. Remova 'unsafe-inline' de todas as diretivas.";
+
+                if (!string.IsNullOrEmpty(cspResult.Message))
+                    cspResult.Message += "\n\n" + unsafeInlineMsg;
+                else
+                    cspResult.Message = unsafeInlineMsg;
+            }
+
+            recommendations = recommendations
                 .Distinct()
                 .ToList();
 
@@ -255,13 +319,17 @@ namespace SecurityHeaderScannerGUI
                 .ToList();
         }
 
-        public static ComparisonsResult CompareWithReference(Dictionary<string, string> headers)
+        public static ComparisonsResult CompareWithReference(Dictionary<string, string> headers, bool isApi = false)
         {
             var result = new ComparisonsResult();
             var headerResults = new List<HeaderCheckResult>();
 
             foreach (var kv in ReferenceHeaders)
             {
+                // No modo API, pular headers que não se aplicam
+                if (isApi && !ApiOnlyHeaders.Contains(kv.Key))
+                    continue;
+
                 headers.TryGetValue(kv.Key, out var actual);
 
                 var expected = kv.Value;
@@ -273,7 +341,15 @@ namespace SecurityHeaderScannerGUI
                 }
                 else if (string.Equals(kv.Key, "Content-Security-Policy", StringComparison.OrdinalIgnoreCase))
                 {
-                    hr = CheckCspBaseline(actual);
+                    if (isApi)
+                    {
+                        hr = CheckCspApi(actual);
+                    }
+                    else
+                    {
+                        hr = CheckCspBaseline(actual);
+                    }
+
                     headerResults.Add(hr);
                     continue;
                 }
@@ -342,6 +418,11 @@ namespace SecurityHeaderScannerGUI
                         hr.Passed = true;
                         hr.Message = string.Empty;
                     }
+                    else if (isApi && Normalize(actual) == "cross-origin")
+                    {
+                        hr.Passed = true;
+                        hr.Message = WARNING + " Recurso acessível por qualquer origem — validar se a API expõe dados públicos/abertos.";
+                    }
                     else if (Normalize(actual) == "same-site")
                     {
                         hr.Passed = false;
@@ -351,6 +432,58 @@ namespace SecurityHeaderScannerGUI
                     {
                         hr.Passed = false;
                         hr.Message = "valor diferente";
+                    }
+
+                    headerResults.Add(hr);
+                    continue;
+                }
+                else if (string.Equals(kv.Key, "X-Frame-Options", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (string.IsNullOrEmpty(actual))
+                    {
+                        hr.Passed = false;
+                        hr.Message = "header ausente";
+                    }
+                    else if (isApi)
+                    {
+                        hr.Passed = Normalize(actual) == "deny";
+                        hr.Expected = "DENY";
+                        if (!hr.Passed)
+                            hr.Message = "Para APIs, recomenda-se DENY em vez de SAMEORIGIN";
+                    }
+                    else
+                    {
+                        hr.Passed = Normalize(actual) == Normalize(expected);
+                        if (!hr.Passed) hr.Message = "valor diferente";
+                    }
+
+                    headerResults.Add(hr);
+                    continue;
+                }
+                else if (string.Equals(kv.Key, "Cache-Control", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (string.IsNullOrEmpty(actual))
+                    {
+                        hr.Passed = false;
+                        hr.Message = "header ausente";
+                    }
+                    else
+                    {
+                        var norm = Normalize(actual);
+
+                        bool hasNoStore = norm.Contains("no-store");
+                        bool hasMaxAge = norm.Contains("max-age=");
+
+                        if (hasNoStore || hasMaxAge)
+                        {
+                            hr.Passed = true;
+                            hr.Message = string.Empty;
+                        }
+                        else
+                        {
+                            hr.Passed = false;
+                            hr.Message = WARNING + " Cache-Control presente, mas sem no-store nem max-age — o tempo de expiração do cache não está explícito.";
+                        }
                     }
 
                     headerResults.Add(hr);
@@ -379,6 +512,40 @@ namespace SecurityHeaderScannerGUI
 
         static string Normalize(string s) =>
             Regex.Replace((s ?? "").ToLowerInvariant(), @"\s+", "");
+
+        public static HeaderCheckResult CheckCspApi(string? actual)
+        {
+            var hr = new HeaderCheckResult
+            {
+                Name = "Content-Security-Policy",
+                Expected = "frame-ancestors 'none'",
+                Actual = actual
+            };
+
+            if (string.IsNullOrWhiteSpace(actual))
+            {
+                hr.Passed = false;
+                hr.Message = "header ausente";
+                return hr;
+            }
+
+            var map = ParseCspDirectives(actual);
+
+            if (!map.ContainsKey("frame-ancestors"))
+            {
+                hr.Passed = false;
+                hr.Message = "frame-ancestors ausente";
+                return hr;
+            }
+
+            var values = map["frame-ancestors"];
+            hr.Passed = values.Contains("'none'", StringComparer.OrdinalIgnoreCase);
+
+            if (!hr.Passed)
+                hr.Message = "Para APIs, frame-ancestors deve ser 'none'";
+
+            return hr;
+        }
 
         public static HeaderCheckResult CheckPermissionsPolicy(string actual)
         {
@@ -761,6 +928,17 @@ namespace SecurityHeaderScannerGUI
             }
             int totalChecks = totalOk + totalFail + totalWarn + totalMissing;
 
+            // Determinar os headers de referência por item (para iteração na tabela)
+            // Usa o set filtrado se for API
+            Dictionary<string, string> GetReferenceHeadersFor(ReportItem it)
+            {
+                if (!it.IsApi) return ReferenceHeaders;
+
+                return ReferenceHeaders
+                    .Where(kv => ApiOnlyHeaders.Contains(kv.Key))
+                    .ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase);
+            }
+
             var sb = new StringBuilder();
             sb.AppendLine("<!doctype html><html lang='pt-BR'><head><meta charset='utf-8'>");
             sb.AppendLine("<meta name='viewport' content='width=device-width, initial-scale=1'>");
@@ -788,6 +966,8 @@ namespace SecurityHeaderScannerGUI
     --orange-dim: rgba(243,156,18,0.10);
     --blue: #3b82f6;
     --blue-dim: rgba(59,130,246,0.10);
+    --purple: #a855f7;
+    --purple-dim: rgba(168,85,247,0.12);
     --border: #2a2d3e;
     --radius: 10px;
     --radius-sm: 6px;
@@ -911,6 +1091,22 @@ body {
     color: var(--red);
     font-weight: 500;
 }
+
+/* ── BADGE TIPO (Website / API) ── */
+.badge-type {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 10px;
+    border-radius: 20px;
+    font-size: 11px;
+    font-weight: 600;
+    white-space: nowrap;
+    margin-left: auto;
+}
+
+.badge-type-website { background: var(--blue-dim); color: var(--blue); }
+.badge-type-api { background: var(--purple-dim); color: var(--purple); }
 
 /* ── TABELAS ── */
 table {
@@ -1093,6 +1289,8 @@ td.mono {
     .badge-fail { background: #ffebee; color: #c62828; }
     .badge-warn { background: #fff8e1; color: #f57f17; }
     .badge-missing { background: #ffebee; color: #c62828; }
+    .badge-type-website { background: #e3f2fd; color: #1565c0; }
+    .badge-type-api { background: #f3e5f5; color: #7b1fa2; }
     .content { padding: 12px 0; }
 }
 
@@ -1141,6 +1339,13 @@ tr.row-ignored td { opacity: 0.5; }
     pointer-events: none;
 }
 
+td.details {
+    max-width: 500px;
+    white-space: normal;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+}
+
 .info-icon:hover .info-tip { visibility: visible; opacity: 1; }
             ");
             sb.AppendLine("</style></head><body>");
@@ -1167,11 +1372,18 @@ tr.row-ignored td { opacity: 0.5; }
             // ── URLs ──
             foreach (var it in items)
             {
+                var refHeaders = GetReferenceHeadersFor(it);
+
+                string typeBadge = it.IsApi
+                    ? "<span class='badge-type badge-type-api'>&#x2699;&#xFE0F; API</span>"
+                    : "<span class='badge-type badge-type-website'>&#x1F310; Website</span>";
+
                 sb.AppendLine("<div class='url-section'>");
                 sb.AppendLine($@"
 <div class='url-header'>
     <span class='url-icon'>🌐</span>
     <h2>{System.Net.WebUtility.HtmlEncode(it.Url)}</h2>
+    {typeBadge}
 </div>");
 
                 sb.AppendLine("<div class='url-body'>");
@@ -1189,7 +1401,7 @@ tr.row-ignored td { opacity: 0.5; }
                 var existingHeaders = it.Comparisons.HeaderChecks
                     .ToDictionary(h => h.Name, StringComparer.OrdinalIgnoreCase);
 
-                foreach (var kv in ReferenceHeaders)
+                foreach (var kv in refHeaders)
                 {
                     var headerName = kv.Key;
                     existingHeaders.TryGetValue(headerName, out var h);
@@ -1205,7 +1417,7 @@ tr.row-ignored td { opacity: 0.5; }
                         }
                         else
                         {
-                            ReferenceHeaders.TryGetValue(headerName, out expected);
+                            refHeaders.TryGetValue(headerName, out expected);
                         }
 
                         sb.AppendLine($@"
@@ -1224,7 +1436,7 @@ tr.row-ignored td { opacity: 0.5; }
                     if (!string.IsNullOrWhiteSpace(h.Expected))
                         expectedValue = h.Expected;
                     else
-                        ReferenceHeaders.TryGetValue(h.Name, out expectedValue);
+                        refHeaders.TryGetValue(h.Name, out expectedValue);
 
                     bool isWarning = !string.IsNullOrEmpty(h.Message) && h.Message.StartsWith(WARNING);
 
@@ -1246,7 +1458,9 @@ tr.row-ignored td { opacity: 0.5; }
                         ? (expectedValue ?? "")
                         : System.Net.WebUtility.HtmlEncode(expectedValue ?? "");
 
-                    string details = System.Net.WebUtility.HtmlEncode(h.Message ?? "").Replace(WARNING, "");
+                    string details = System.Net.WebUtility.HtmlEncode(h.Message ?? "")
+                        .Replace("\n\n", "<br><br>")
+                        .Replace(WARNING, "");
 
                     sb.AppendLine($@"
 <tr>
@@ -1254,7 +1468,7 @@ tr.row-ignored td { opacity: 0.5; }
     <td>{status}</td>
     <td class='mono'>{System.Net.WebUtility.HtmlEncode(h.Actual ?? "(vazio)")}</td>
     <td class='mono'>{expectedRendered}</td>
-    <td>{details}</td>
+    <td class='details'>{details}</td>
 </tr>");
                 }
 
@@ -1328,6 +1542,8 @@ tr.row-ignored td { opacity: 0.5; }
         <div class='legend-item'><span class='badge badge-warn'>&#x26A0;&#xFE0F; Atenção</span> Deve ser analisado</div>
         <div class='legend-item'><span class='badge badge-fail'>&#x274C; Falha</span> Deve ser corrigido</div>
         <div class='legend-item'><span class='badge badge-missing'>&#x26D4; Ausente</span> Deve ser implementado</div>
+        <div class='legend-item'><span class='badge-type badge-type-website'>&#x1F310; Website</span> Verificação completa</div>
+        <div class='legend-item'><span class='badge-type badge-type-api'>&#x2699;&#xFE0F; API</span> Headers relevantes para API</div>
     </div>
 </div>");
 
@@ -1346,6 +1562,7 @@ tr.row-ignored td { opacity: 0.5; }
     public class ReportItem
     {
         public string Url { get; set; } = "";
+        public bool IsApi { get; set; }
         public DateTime TimestampUtc { get; set; }
         public string? Error { get; set; }
         public Dictionary<string, string>? Headers { get; set; }
@@ -1395,27 +1612,45 @@ tr.row-ignored td { opacity: 0.5; }
 
     public static class Scanner
     {
-        public static async Task<string> RunScan(List<string> urls, Action<int>? progress = null)
+        public static async Task<string> RunScan(
+    List<(string Url, bool IsApi)> urls,
+    Action<int>? progress = null)
         {
             Directory.CreateDirectory("Reports");
+
             var reportItems = new List<ReportItem>();
 
             int total = urls.Count;
             int done = 0;
 
-            foreach (var url in urls)
+            foreach (var item in urls)
             {
-                reportItems.Add(await SecurityAnalyzer.AnalyzeUrl(url));
+                reportItems.Add(
+                    await SecurityAnalyzer.AnalyzeUrl(
+                        item.Url,
+                        item.IsApi));
 
                 done++;
-                int percent = (int)((done / (double)total) * 100);
+
+                int percent =
+                    (int)((done / (double)total) * 100);
 
                 progress?.Invoke(percent);
             }
 
-            var timestamp = DateTime.UtcNow.ToString("yyyyMMdd_HHmmss");
-            var outPath = Path.Combine("Reports", $"report_{timestamp}.html");
-            File.WriteAllText(outPath, SecurityAnalyzer.RenderHtml(reportItems, timestamp));
+            var timestamp =
+                DateTime.UtcNow.ToString("yyyyMMdd_HHmmss");
+
+            var outPath =
+                Path.Combine(
+                    "Reports",
+                    $"report_{timestamp}.html");
+
+            File.WriteAllText(
+                outPath,
+                SecurityAnalyzer.RenderHtml(
+                    reportItems,
+                    timestamp));
 
             return outPath;
         }
