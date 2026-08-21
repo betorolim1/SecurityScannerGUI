@@ -439,6 +439,9 @@ namespace SecurityHeaderScannerGUI
                 }
                 else if (string.Equals(kv.Key, "X-Frame-Options", StringComparison.OrdinalIgnoreCase))
                 {
+                    if (isApi)
+                        hr.Expected = "DENY";
+
                     if (string.IsNullOrEmpty(actual))
                     {
                         hr.Passed = false;
@@ -447,7 +450,6 @@ namespace SecurityHeaderScannerGUI
                     else if (isApi)
                     {
                         hr.Passed = Normalize(actual) == "deny";
-                        hr.Expected = "DENY";
                         if (!hr.Passed)
                             hr.Message = "Para APIs, recomenda-se DENY em vez de SAMEORIGIN";
                     }
